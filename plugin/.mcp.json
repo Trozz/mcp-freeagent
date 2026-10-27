@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "freeagent": {
+      "type": "http",
+      "url": "${FREEAGENT_MCP_URL:-http://localhost:7771/freeagent}"
+    }
+  }
+}

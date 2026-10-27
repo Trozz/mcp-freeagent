@@ -23,6 +23,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
@@ -41,6 +42,9 @@ pub struct OAuthApp {
     api_url: Url,
     client_id: String,
     client_secret: SecretString,
+    /// Whether FreeAgent refused the app's credentials as HTTP Basic and accepted them in the
+    /// form body instead: then they are sent in the body from then on.
+    body_auth: AtomicBool,
 }
 
 impl std::fmt::Debug for OAuthApp {
@@ -92,6 +96,7 @@ impl OAuthApp {
             api_url,
             client_id,
             client_secret,
+            body_auth: AtomicBool::new(false),
         }
     }
 
@@ -144,15 +149,53 @@ impl OAuthApp {
         } else {
             "authorization_code"
         };
+        // FreeAgent documents HTTP Basic client authentication; some apps are only accepted with
+        // the credentials in the body. Basic is tried first, and a Basic refusal once with the
+        // body, which is then kept.
+        let body_first = self.body_auth.load(Ordering::Relaxed);
+        let first = self.token_attempt(grant, form, body_first).await;
+        if body_first || !matches!(first, Err(TokenError::BadClient)) {
+            return first;
+        }
+        let second = self.token_attempt(grant, form, true).await;
+        match &second {
+            Ok(_) => {
+                if !self.body_auth.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        "FreeAgent refused this app's credentials as HTTP Basic but accepted them in the request body; sending them in the body from now on"
+                    );
+                }
+            }
+            Err(TokenError::BadClient) => {}
+            Err(_) => tracing::warn!(
+                "FreeAgent refused this app's credentials as HTTP Basic (check FREEAGENT_CLIENT_ID and FREEAGENT_CLIENT_SECRET); sent them in the request body instead"
+            ),
+        }
+        second
+    }
+
+    async fn token_attempt(
+        &self,
+        grant: &'static str,
+        form: &[(&str, &str)],
+        in_body: bool,
+    ) -> Result<TokenGrant, TokenError> {
         let started = Instant::now();
-        let result = self
+        let request = self
             .http
             .post(self.endpoint("token_endpoint"))
-            .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
-            .header(reqwest::header::ACCEPT, "application/json")
-            .form(form)
-            .send()
-            .await;
+            .header(reqwest::header::ACCEPT, "application/json");
+        let request = if in_body {
+            let mut all: Vec<(&str, &str)> = form.to_vec();
+            all.push(("client_id", &self.client_id));
+            all.push(("client_secret", self.client_secret.expose_secret()));
+            request.form(&all)
+        } else {
+            request
+                .basic_auth(&self.client_id, Some(self.client_secret.expose_secret()))
+                .form(form)
+        };
+        let result = request.send().await;
         let status = result.as_ref().ok().map(|r| r.status().as_u16());
         metrics::counter!("freeagent_token_requests_total", "grant" => grant, "status" => status.map(|s| s.to_string()).unwrap_or_else(|| "error".into()))
             .increment(1);

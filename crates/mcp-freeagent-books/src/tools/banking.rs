@@ -346,7 +346,7 @@ impl BooksServer {
     }
 
     #[tool(
-        description = "One bank account in full.",
+        description = "One bank account in full: type, currency, balance, account details and latest activity.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub async fn get_bank_account(

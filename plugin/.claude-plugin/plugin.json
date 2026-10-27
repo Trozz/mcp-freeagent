@@ -1,0 +1,10 @@
+{
+  "name": "freeagent",
+  "version": "0.1.0",
+  "description": "FreeAgent bookkeeping in Claude Code: the FreeAgent MCP server plus slash commands for monthly bookkeeping, explaining bank transactions, invoicing, chasing overdue invoices, VAT checks, logging time and more.",
+  "author": { "name": "Michael Leer" },
+  "homepage": "https://github.com/Trozz/mcp-freeagent",
+  "repository": "https://github.com/Trozz/mcp-freeagent",
+  "license": "MIT",
+  "keywords": ["freeagent", "accounting", "bookkeeping", "invoices", "vat", "mcp"]
+}

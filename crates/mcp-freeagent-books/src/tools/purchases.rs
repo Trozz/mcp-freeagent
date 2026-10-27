@@ -735,7 +735,7 @@ impl BooksServer {
     }
 
     #[tool(
-        description = "One expense in full.",
+        description = "One expense or mileage claim in full: user, category, date, amounts, VAT, receipt and rebilling.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub async fn get_expense(

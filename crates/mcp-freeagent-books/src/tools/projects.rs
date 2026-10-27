@@ -240,7 +240,7 @@ impl BooksServer {
     }
 
     #[tool(
-        description = "One project in full.",
+        description = "One project in full: client, status, budget, billing rate, dates and currency.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub async fn get_project(
