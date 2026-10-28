@@ -1,0 +1,7 @@
+version: 2
+secret:
+  ignored_matches:
+    - name: test-only FreeAgent OAuth app secret placeholder
+      match: test-client-secret
+    - name: test-only FreeAgent refresh token placeholder
+      match: refresh-0

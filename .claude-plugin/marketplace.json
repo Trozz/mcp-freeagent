@@ -1,0 +1,11 @@
+{
+  "name": "mcp-freeagent",
+  "owner": { "name": "Michael Leer" },
+  "plugins": [
+    {
+      "name": "freeagent",
+      "source": "./plugin",
+      "description": "The FreeAgent MCP server and bookkeeping slash commands."
+    }
+  ]
+}

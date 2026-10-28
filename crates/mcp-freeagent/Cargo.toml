@@ -1,0 +1,22 @@
+[package]
+name = "mcp-freeagent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mcp-server-core.workspace = true
+mcp-freeagent-books = { path = "../mcp-freeagent-books" }
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tower.workspace = true
+http-body-util.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tokio-util.workspace = true
+url.workspace = true
