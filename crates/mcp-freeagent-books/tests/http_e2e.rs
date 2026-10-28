@@ -37,7 +37,8 @@ async fn app(fake: &FakeFreeAgent) -> axum::Router {
     let server = Server::new("mcp-freeagent", "test")
         .env_prefix("FREEAGENT")
         .service("freeagent", mcp_freeagent_books::from_env)
-        .sign_in(SignIn::ServiceCredential);
+        .sign_in(SignIn::ServiceCredential)
+        .wrap_router(mcp_freeagent_books::uploads::routes);
     let loaded = server
         .load(&mut env)
         .unwrap_or_else(|| panic!("config errors: {:?}", env.errors));
@@ -474,4 +475,192 @@ async fn declining_at_freeagent_tells_the_client() {
     let back = url::Url::parse(res.headers()["location"].to_str().unwrap()).unwrap();
     assert_eq!(param(&back, "error").as_deref(), Some("access_denied"));
     assert_eq!(fake.lock().codes_used, 0);
+}
+
+/// A multipart form with one file field.
+fn multipart(uri: &str, field: &str, file_name: &str, bytes: &[u8], accept: &str) -> Request<Body> {
+    let boundary = "x-test-boundary-7f3a";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{file_name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Request::post(uri)
+        .header("host", HOST)
+        .header("accept", accept)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
+
+async fn call_tool(
+    app: &axum::Router,
+    token: &str,
+    sid: &str,
+    id: u32,
+    name: &str,
+    args: Value,
+) -> Value {
+    let res = message(
+        send(
+            app,
+            rpc("/freeagent", token, json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}}), Some(sid)),
+        )
+        .await,
+    )
+    .await;
+    let text = res["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_ne!(res["result"]["isError"], json!(true), "{name}: {text}");
+    serde_json::from_str(&text).unwrap_or_else(|_| panic!("{name}: {text}"))
+}
+
+#[tokio::test]
+async fn files_are_attached_through_a_single_use_upload_link() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "expenses/5",
+        support::fake_freeagent::Canned::ok(json!({"expense": {"url": fake.res("expenses/5"), "description": "Train to Leeds", "dated_on": "2026-10-01", "gross_value": "-42.50"}})),
+    );
+    let app = app(&fake).await;
+    let token = sign_in(&app, &fake, "https://books.example.com/freeagent").await;
+    let sid = session(&app, "/freeagent", &token).await;
+
+    let link = call_tool(
+        &app,
+        &token,
+        &sid,
+        10,
+        "create_upload_link",
+        json!({"target": "expense", "id": "5"}),
+    )
+    .await;
+    let url = link["upload_url"].as_str().unwrap().to_string();
+    assert!(
+        url.starts_with("https://books.example.com/upload/"),
+        "{url}"
+    );
+    assert_eq!(link["for"]["item"], "Train to Leeds, 2026-10-01, 42.50");
+    let path = url
+        .trim_start_matches("https://books.example.com")
+        .to_string();
+
+    // The page, for a browser: says what the file is for, has a file field, is not cached.
+    let res = send(
+        &app,
+        Request::get(&path)
+            .header("host", HOST)
+            .header("accept", "text/html")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["cache-control"], "no-store");
+    assert_eq!(res.headers()["referrer-policy"], "no-referrer");
+    let html = body_text(res).await;
+    assert!(
+        html.contains("Train to Leeds") && html.contains("type=\"file\""),
+        "{html}"
+    );
+
+    // A file FreeAgent does not take is refused, and the link still works.
+    let res = send(
+        &app,
+        multipart(&path, "file", "notes.docx", b"PK\x03\x04zip", "*/*"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let st = call_tool(
+        &app,
+        &token,
+        &sid,
+        11,
+        "get_upload_status",
+        json!({"upload_url": url}),
+    )
+    .await;
+    assert_eq!(st["status"], "waiting");
+    assert!(
+        st["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("PDF, PNG, JPEG or GIF")
+    );
+
+    // A PDF over 1 MB, which the MCP endpoint could never take, is attached as the person.
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    pdf.resize(1_500_000, b'0');
+    let res = send(&app, multipart(&path, "file", "receipt.pdf", &pdf, "*/*")).await;
+    assert_eq!(res.status(), StatusCode::OK, "{}", body_text(res).await);
+    let put = fake.last("PUT", "expenses/5");
+    assert_eq!(put.authorization.as_deref(), Some("Bearer access-0"));
+    let a = &put.body.unwrap()["expense"]["attachment"];
+    assert_eq!(a["file_name"], "receipt.pdf");
+    assert_eq!(a["content_type"], "application/x-pdf");
+    assert_eq!(a["data"].as_str().unwrap().len(), 2_000_000);
+
+    let st = call_tool(
+        &app,
+        &token,
+        &sid,
+        12,
+        "get_upload_status",
+        json!({"upload_url": url}),
+    )
+    .await;
+    assert_eq!(st["status"], "attached");
+    assert_eq!(st["file_name"], "receipt.pdf");
+
+    // Single use.
+    let res = send(
+        &app,
+        multipart(&path, "file", "again.pdf", b"%PDF-1.7", "*/*"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let puts = fake
+        .api_log()
+        .into_iter()
+        .filter(|l| l.method == "PUT")
+        .count();
+    assert_eq!(puts, 1);
+}
+
+#[tokio::test]
+async fn unknown_upload_links_are_refused() {
+    let fake = FakeFreeAgent::start().await;
+    let app = app(&fake).await;
+    let res = send(
+        &app,
+        Request::get("/upload/AAAAAAAAAAAAAAAAAAAAAA")
+            .header("host", HOST)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    let res = send(
+        &app,
+        multipart(
+            "/upload/AAAAAAAAAAAAAAAAAAAAAA",
+            "file",
+            "r.pdf",
+            b"%PDF-1.7",
+            "*/*",
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(fake.api_log().is_empty());
 }

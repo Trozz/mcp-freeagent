@@ -616,3 +616,108 @@ fn every_tool_has_a_description_and_the_right_hints() {
     }
     let _ = text;
 }
+
+#[tokio::test]
+async fn explanation_attachments_use_the_attachments_endpoint() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "bank_transactions/11",
+        Canned::ok(json!({"bank_transaction": {"url": fake.res("bank_transactions/11"), "amount": "-6.17", "unexplained_amount": "-6.17", "dated_on": "2026-01-15", "description": "AWS"}})),
+    );
+    fake.on(
+        "POST",
+        "bank_transaction_explanations",
+        Canned::status(201, json!({"bank_transaction_explanation": {"url": fake.res("bank_transaction_explanations/44")}})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.explain_bank_transaction(
+            params(json!({"bank_transaction_id": "11", "category": "365", "attachment": {"file_name": "aws.pdf", "data_base64": "JVBERi0xLjc="}})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["attached"], "aws.pdf");
+    let created = fake
+        .last("POST", "bank_transaction_explanations")
+        .body
+        .unwrap();
+    assert!(
+        created["bank_transaction_explanation"]
+            .get("attachment")
+            .is_none(),
+        "{created}"
+    );
+    let att = fake.last("POST", "bank_transaction_explanations/44/attachments");
+    assert_eq!(att.api_version.as_deref(), Some("2026-09-01"));
+    assert_eq!(
+        att.body.unwrap()["attachments"][0]["content_type"],
+        "application/x-pdf"
+    );
+}
+
+#[tokio::test]
+async fn attach_file_checks_the_file_and_upload_links_need_the_item() {
+    let fake = FakeFreeAgent::start().await;
+    let s = server(&fake);
+    json(
+        &s.attach_file(params(json!({"target": "bill", "id": "3", "file_name": "inv.png", "data_base64": "iVBORw0KGgo="})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        fake.last("PUT", "bills/3").body.unwrap()["bill"]["attachment"]["content_type"],
+        "image/png"
+    );
+    let r = s
+        .attach_file(params(json!({"target": "expense", "id": "3", "file_name": "x.txt", "data_base64": "aGVsbG8="})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).contains("PDF, PNG, JPEG or GIF"));
+    // A link is only made for an item that exists.
+    let r = s
+        .create_upload_link(params(json!({"target": "expense", "id": "404"})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).starts_with("not_found:"));
+    // Without the public address no link can be made.
+    let bare = mcp_freeagent_books::tools::BooksServer::new(support::tools::client(&fake));
+    let r = bare
+        .create_upload_link(params(json!({"target": "expense", "id": "1"})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).contains("public address"));
+}
+
+#[tokio::test]
+async fn upload_links_belong_to_whoever_made_them() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "expenses/5",
+        Canned::ok(json!({"expense": {"url": fake.res("expenses/5"), "description": "x"}})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.create_upload_link(params(json!({"target": "expense", "id": "5"})), auth())
+            .await
+            .unwrap(),
+    );
+    let url = v["upload_url"].as_str().unwrap();
+    let mine = json(
+        &s.get_upload_status(params(json!({"upload_url": url})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(mine["status"], "waiting");
+    let theirs = s
+        .get_upload_status(
+            params(json!({"upload_url": url})),
+            support::tools::auth_with("someone-else"),
+        )
+        .await
+        .unwrap();
+    assert!(error_text(&theirs).starts_with("not_found:"));
+}
