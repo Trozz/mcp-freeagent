@@ -156,8 +156,6 @@ Layout:
 - `crates/mcp-freeagent-books`: the `freeagent` service: OAuth and tokens (`oauth.rs`), sign-in through FreeAgent (`verifier.rs`), API client (`api.rs`), tools (`tools/`), output shaping (`view.rs`) and prompts.
 - `plugin/`: the Claude Code plugin; `.claude-plugin/marketplace.json` lists it.
 
-`mcp-server-core` is taken from git at the commit that adds upstream OAuth sign-in, until that is released to crates.io; then the workspace `Cargo.toml` and `deny.toml` go back to crates.io only.
-
 ## License
 
 MIT
