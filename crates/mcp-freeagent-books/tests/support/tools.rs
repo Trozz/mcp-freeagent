@@ -30,7 +30,7 @@ pub fn client(fake: &FakeFreeAgent) -> Arc<FaClient> {
 }
 
 pub fn server(fake: &FakeFreeAgent) -> BooksServer {
-    BooksServer::new(client(fake))
+    BooksServer::new(client(fake)).with_public_url("https://books.example.com")
 }
 
 /// The request details a tool sees for a person signed in with the fake's refresh token.

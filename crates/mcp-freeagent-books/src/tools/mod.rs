@@ -20,6 +20,7 @@ use std::time::Instant;
 use tracing::Instrument;
 
 pub mod accounting;
+pub mod attachments;
 pub mod banking;
 pub mod company;
 pub mod contacts;
@@ -43,6 +44,7 @@ Start with get_company (company, VAT status, accounting year) and business_snaps
 Lists are paged: pass next_page as page for more. search_contacts finds customers and suppliers by name or email; list_categories finds the nominal code for an income or expense. \
 Sales: create_invoice makes a draft; invoice_action marks it sent, cancels it or duplicates it; send_document_email emails invoices, estimates and credit notes. Purchases: create_bill, create_expense, create_mileage_claim. \
 Banking: list_bank_transactions with view unexplained shows what needs explaining; explain_bank_transaction categorises one, or matches it to an invoice, bill, transfer or user; approve_explanations confirms FreeAgent's guesses. \
+Attach receipts and invoices with create_upload_link: it gives the person a link to pick the file, because files shared in the chat cannot be passed to tools. \
 Bank money out is negative and money in positive. Expenses: a cost the claimant paid is negative. \
 Reports: get_profit_and_loss, get_balance_sheet, get_trial_balance, get_cashflow; tax: list_tax_returns, get_tax_return. api_get and api_request reach any other FreeAgent endpoint. \
 Before creating, changing, sending or deleting anything, show the person what will be done and get their agreement. \
@@ -52,6 +54,8 @@ FreeAgent allows 120 requests per minute per user.";
 #[derive(Clone)]
 pub struct BooksServer {
     pub(crate) client: Arc<FaClient>,
+    /// `PUBLIC_URL`, for upload links; unknown until the service is mounted.
+    public_url: Option<String>,
     tool_router: ToolRouter<BooksServer>,
 }
 
@@ -59,6 +63,7 @@ impl BooksServer {
     pub fn new(client: Arc<FaClient>) -> Self {
         Self {
             client,
+            public_url: None,
             tool_router: Self::company_router()
                 + Self::contacts_router()
                 + Self::projects_router()
@@ -67,8 +72,19 @@ impl BooksServer {
                 + Self::purchases_router()
                 + Self::banking_router()
                 + Self::accounting_router()
-                + Self::raw_router(),
+                + Self::raw_router()
+                + Self::attachments_router(),
         }
+    }
+
+    /// The same server, making upload links below `public_url` (`PUBLIC_URL`).
+    pub fn with_public_url(mut self, public_url: impl Into<String>) -> Self {
+        self.public_url = Some(public_url.into().trim_end_matches('/').to_string());
+        self
+    }
+
+    pub(crate) fn public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
     }
 
     /// Names of the registered tools, sorted.
@@ -110,6 +126,16 @@ pub(crate) struct Caller {
 }
 
 impl Caller {
+    /// The shared FreeAgent client.
+    pub(crate) fn client_ref(&self) -> Arc<FaClient> {
+        self.client.clone()
+    }
+
+    /// The caller's sealed FreeAgent sign-in.
+    pub(crate) fn credential(&self) -> &Credential {
+        &self.key
+    }
+
     pub(crate) async fn get(
         &self,
         endpoint: &'static str,

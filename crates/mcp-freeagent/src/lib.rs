@@ -28,6 +28,7 @@ pub fn server() -> Server {
         .crate_target(CRATE_TARGET)
         .services(SERVICES)
         .sign_in(SignIn::ServiceCredential)
+        .wrap_router(mcp_freeagent_books::uploads::routes)
         .icon(
             include_bytes!("../assets/favicon.png"),
             include_str!("../assets/favicon.svg"),

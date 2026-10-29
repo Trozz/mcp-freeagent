@@ -10,15 +10,24 @@ use std::sync::Arc;
 /// The FreeAgent service, mounted by the server at `/freeagent`.
 pub struct BooksService {
     client: Arc<FaClient>,
+    /// `PUBLIC_URL`, learnt when the service is mounted, for upload links.
+    public_url: std::sync::OnceLock<String>,
 }
 
 impl BooksService {
     pub fn new(client: Arc<FaClient>) -> Self {
-        Self { client }
+        Self {
+            client,
+            public_url: std::sync::OnceLock::new(),
+        }
     }
 
     fn server(&self) -> BooksServer {
-        BooksServer::new(self.client.clone())
+        let server = BooksServer::new(self.client.clone());
+        match self.public_url.get() {
+            Some(url) => server.with_public_url(url.clone()),
+            None => server,
+        }
     }
 }
 
@@ -32,6 +41,7 @@ impl Service for BooksService {
     }
 
     fn router(self: Arc<Self>, ctx: &ServiceContext) -> axum::Router {
+        let _ = self.public_url.set(ctx.http.public_url.clone());
         tracing::info!(
             api = %self.client.base(),
             client_id = %self.client.tokens().app().client_id(),
