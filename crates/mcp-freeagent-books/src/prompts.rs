@@ -347,8 +347,9 @@ fn record_expense(p: &str, a: &Args) -> String {
    - already paid from a company bank account or card: find the transaction with `{p}list_bank_transactions` (view unexplained, near the date) and explain it with `{p}explain_bank_transaction`.\n\
    If it is unclear, ask me how it was paid.\n\
 2. Pick the category with `{p}list_categories` and a query. Work out the VAT: check `{p}get_company` for VAT registration; VAT is reclaimable only with a VAT receipt from a VAT-registered supplier.\n\
-3. Show me: what will be recorded, the category with its nominal code, date, gross amount, VAT and description. If a receipt file was attached and is under 700 KB, offer to attach it (as base64).\n\
-4. When I agree, record it and show the result.\n\n{}",
+3. Show me: what will be recorded, the category with its nominal code, date, gross amount, VAT and description.\n\
+4. When I agree, record it and show the result.\n\
+5. Attach the receipt or invoice: call `{p}create_upload_link` with the expense, bill or bank transaction explanation you recorded and give me the upload_url to open and pick the file (you cannot pass a file shared in the chat to a tool yourself). When I say it is done, check with `{p}get_upload_status`. If you can read the file yourself, for example from a path with a shell, use `{p}attach_file` for files up to about 700 KB instead.\n\n{}",
         a.get("details"),
         footer(true)
     )

@@ -2,13 +2,14 @@
 //! guessed explanations, statement uploads and bank feeds.
 
 use super::contacts::IdParams;
-use super::purchases::{Attachment, attachment};
+use super::purchases::{Attachment, file_of};
 use super::{
     BooksServer, Caller, MAX_ITEMS, Query, category_ref, choice, date_arg, date_range, fields,
     id_arg, json_result, merge, money_arg, opt_decimal, opt_money, opt_s, paging, push, ref_arg,
     required_date, required_ref, required_text, run, since_arg, text_arg, wrap,
 };
 use crate::error::{self, FaError};
+use crate::uploads::{File, Target};
 use crate::view::{self, pence};
 use axum::http::request::Parts;
 use reqwest::Method;
@@ -268,12 +269,39 @@ fn explanation_body(c: &Caller, f: &ExplanationFields) -> error::Result<Map<Stri
             )?
             .map(Value::from),
         ),
-        (
-            "attachment",
-            f.attachment.as_ref().map(attachment).transpose()?,
-        ),
     ]);
+    // An attachment goes through the explanation's attachments endpoint after the write: the
+    // single attachment field is withdrawn from FreeAgent's API.
     merge(f.extra.as_ref(), typed)
+}
+
+/// Attaches `file`, if any, to explanation `out` just written, and notes the outcome in `out`.
+/// A failure is reported, not raised: the explanation itself was saved.
+async fn attach_after(c: &Caller, out: &mut Value, file: Option<File>) {
+    let Some(file) = file else { return };
+    let Some(id) = out.get("id").and_then(Value::as_str).map(String::from) else {
+        out["attachment_error"] = Value::from(
+            "FreeAgent did not return the explanation's id, so the file was not attached; use attach_file",
+        );
+        return;
+    };
+    match crate::uploads::attach(
+        &c.client_ref(),
+        c.credential(),
+        Target::Explanation,
+        &id,
+        &file,
+    )
+    .await
+    {
+        Ok(_) => out["attached"] = Value::from(file.name),
+        Err(e) => {
+            out["attachment_error"] = Value::from(format!("{}: {e}", e.kind()));
+            out["note"] = Value::from(
+                "the explanation was saved but the file was not attached; do not explain the transaction again, attach the file with attach_file or create_upload_link",
+            );
+        }
+    }
 }
 
 /// Checks that an explanation says what the money was, in exactly one way.
@@ -515,6 +543,7 @@ impl BooksServer {
             let tx_id = id_arg("bank_transaction_id", &p.bank_transaction_id)?;
             let mut body = explanation_body(&c, &p.fields)?;
             check_target(&body)?;
+            let file = p.fields.attachment.as_ref().map(file_of).transpose()?;
             let tx = c.one("bank_transaction", &["bank_transactions", &tx_id], "bank_transaction", &[]).await?;
             let unexplained = pence(tx.get("unexplained_amount"));
             if unexplained == Some(0) {
@@ -555,7 +584,7 @@ impl BooksServer {
                 body.insert("description".into(), d.clone());
             }
             body.insert("bank_transaction".into(), Value::from(c.url("bank_transactions", &tx_id)));
-            let out = c
+            let mut out = c
                 .write(
                     Method::POST,
                     "create_explanation",
@@ -565,6 +594,7 @@ impl BooksServer {
                     "bank_transaction_explanation",
                 )
                 .await?;
+            attach_after(&c, &mut out, file).await;
             Ok(json_result(&out))
         })
         .await
@@ -591,10 +621,15 @@ impl BooksServer {
             if let Some(m) = p.marked_for_review {
                 body.insert("marked_for_review".into(), Value::from(m));
             }
+            let file = p.fields.attachment.as_ref().map(file_of).transpose()?;
             if body.is_empty() {
-                return Err(FaError::invalid("give at least one field to change"));
+                let Some(file) = file else {
+                    return Err(FaError::invalid("give at least one field to change"));
+                };
+                let a = crate::uploads::attach(&c.client_ref(), c.credential(), Target::Explanation, &id, &file).await?;
+                return Ok(json_result(&json!({"attached": file.name, "to": c.url("bank_transaction_explanations", &id), "result": view::resource(&a)})));
             }
-            let out = c
+            let mut out = c
                 .write(
                     Method::PUT,
                     "update_explanation",
@@ -604,6 +639,7 @@ impl BooksServer {
                     "bank_transaction_explanation",
                 )
                 .await?;
+            attach_after(&c, &mut out, file).await;
             Ok(json_result(&out))
         })
         .await

@@ -293,6 +293,23 @@ impl FaClient {
         query: &[(&str, String)],
         body: Option<&Value>,
     ) -> Result<Answer> {
+        self.send_versioned(key, method, endpoint, segments, query, body, None)
+            .await
+    }
+
+    /// [`send`](Self::send) with `X-Api-Version` set to `version` for this request, for
+    /// endpoints that exist only from a given API version, instead of the configured one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_versioned(
+        &self,
+        key: &Credential,
+        method: Method,
+        endpoint: &'static str,
+        segments: &[&str],
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        version: Option<&str>,
+    ) -> Result<Answer> {
         let url = self.url(segments, query);
         let path = url.path().to_string();
         let retryable = method == Method::GET;
@@ -306,7 +323,7 @@ impl FaClient {
                 .request(method.clone(), url.clone())
                 .bearer_auth(token.expose_secret())
                 .header(reqwest::header::ACCEPT, "application/json");
-            if let Some(v) = &self.settings.api_version {
+            if let Some(v) = version.or(self.settings.api_version.as_deref()) {
                 request = request.header("X-Api-Version", v);
             }
             if let Some(body) = body {

@@ -8,6 +8,7 @@ pub mod oauth;
 pub mod prompts;
 pub mod service;
 pub mod tools;
+pub mod uploads;
 pub mod verifier;
 pub mod view;
 

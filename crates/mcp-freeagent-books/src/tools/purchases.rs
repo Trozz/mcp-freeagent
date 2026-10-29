@@ -194,6 +194,23 @@ pub struct MileageParams {
     pub project_id: Option<String>,
 }
 
+/// The file of an attachment argument, checked by its contents.
+pub(crate) fn file_of(a: &Attachment) -> error::Result<crate::uploads::File> {
+    let data: String = a
+        .data_base64
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|_| FaError::invalid("attachment.data_base64 is not valid base64"))?;
+    crate::uploads::File::new(
+        &required_text("attachment.file_name", &a.file_name)?,
+        bytes,
+        text_arg("attachment.description", a.description.as_deref())?,
+    )
+}
+
 /// FreeAgent's attachment object, checked.
 pub(crate) fn attachment(a: &Attachment) -> error::Result<Value> {
     let name = required_text("attachment.file_name", &a.file_name)?;
