@@ -13,10 +13,9 @@ license = "MIT"
 repository = "https://github.com/Trozz/mcp-freeagent"
 
 [workspace.dependencies]
-# The shared MCP server base: OAuth 2.1, sign-in, TLS, routing, observability. Sign-in through
-# FreeAgent's own OAuth needs its `upstream` module, which is not on crates.io yet: switch this to
-# `mcp-server-core = "0.2"` once that version is published.
-mcp-server-core = { git = "https://github.com/Trozz/mcp-server-core-rs", rev = "0d7a6bd40450d39a4876278b1aa770417a93e890" }
+# The shared MCP server base: OAuth 2.1, sign-in (including FreeAgent's own OAuth, through its
+# `upstream` module), TLS, routing, observability.
+mcp-server-core = "0.2"
 thiserror = "2.0.21"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

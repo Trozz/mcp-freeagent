@@ -39,5 +39,3 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# mcp-server-core with sign-in through upstream OAuth, until it is published to crates.io.
-allow-git = ["https://github.com/Trozz/mcp-server-core-rs"]
