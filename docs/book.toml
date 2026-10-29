@@ -1,0 +1,19 @@
+[book]
+title = "mcp-freeagent"
+description = "A self-hosted MCP server for FreeAgent, the UK accounting software"
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output]
+
+[output.html]
+site-url = "/mcp-freeagent/"
+git-repository-url = "https://github.com/Trozz/mcp-freeagent"
+edit-url-template = "https://github.com/Trozz/mcp-freeagent/edit/develop/docs/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
