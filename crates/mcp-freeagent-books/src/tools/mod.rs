@@ -291,10 +291,26 @@ impl ServerHandler for BooksServer {
 /// Query parameters of a FreeAgent request.
 pub(crate) type Query = Vec<(&'static str, String)>;
 
+/// The most characters a page of a list may come to. Clients cut or refuse longer tool results
+/// (Claude Code's default limit is 25,000 tokens, about 80,000 characters of JSON), and a model
+/// cannot recover from that the way it can from a clear error.
+pub const MAX_RESULT_CHARS: usize = 80_000;
+
+/// A tool result: `v` as compact JSON, without what [`view::for_output`] leaves out. A page of a
+/// list (`items` with more than one item) longer than [`MAX_RESULT_CHARS`] becomes an error that
+/// says what per_page fits.
 pub(crate) fn json_result(v: &Value) -> CallToolResult {
     let mut v = v.clone();
-    view::drop_signed_links(&mut v);
-    let text = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());
+    view::for_output(&mut v);
+    let text = serde_json::to_string(&v).unwrap_or_default();
+    let count = v.get("items").and_then(Value::as_array).map_or(0, Vec::len);
+    if text.len() > MAX_RESULT_CHARS && count > 1 {
+        let fits = (count * MAX_RESULT_CHARS * 3 / 4 / text.len()).max(1);
+        return CallToolResult::error(vec![ContentBlock::text(format!(
+            "too_large: these {count} items came to {} characters, more than the {MAX_RESULT_CHARS} a tool result can carry. Ask again with per_page {fits} (page numbers then count in steps of {fits}), or narrow the dates.",
+            text.len()
+        ))]);
+    }
     CallToolResult::success(vec![ContentBlock::text(text)])
 }
 

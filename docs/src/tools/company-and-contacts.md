@@ -7,15 +7,15 @@ Who the books belong to, who is signed in, and the customers and suppliers in th
 | Tool | Kind | What it does | Key parameters |
 |---|---|---|---|
 | `get_company` | read | The company these books belong to: name, type (limited company, sole trader and so on), currency, accounting year dates, VAT registration and rates, address and registration number. Call it first for context | none |
-| `get_current_user` | read | The signed-in FreeAgent user: name, email, role and `permission_level` (see [Access levels](../signing-in.md#access-levels)) | none |
+| `get_current_user` | read | The signed-in FreeAgent user: name, email, role and `permission_level` (see [Access levels](../signing-in.md#access-levels)). National Insurance numbers and tax references are left out of this and every result | none |
 | `list_users` | read | The company's FreeAgent users (directors, employees, accountants) with their ids, roles and permission levels. Needs the tax, accounting and users access level | `view`: `all` (default), `staff`, `active_staff`, `advisors` or `active_advisors` |
 | `get_tax_timeline` | read | Upcoming and recent deadlines for VAT returns, corporation tax, self assessment, payroll and Companies House filings, with amounts due where known | none |
-| `business_snapshot` | read | Where the business stands, in one call: company basics, each bank account's balance and number of unexplained transactions, money owed to you (open and overdue invoices) and by you (open and overdue bills), and the next tax deadlines | none |
+| `business_snapshot` | read | Where the business stands, in one call: company basics, each bank account's balance, number of unexplained transactions and explanations to approve, money owed to you (open and overdue invoices) and by you (open and overdue bills), and the next tax deadlines | none |
 
 ### business_snapshot
 
 - It sums up to 500 open invoices and 500 open bills; when there are more, that section is marked `truncated`.
-- It counts unexplained transactions for the first 10 bank accounts.
+- Each visible bank account shows `unexplained_transactions` and `explanations_to_approve` (FreeAgent's guesses awaiting approval), as FreeAgent counts them. Hidden accounts are left out.
 - A section it cannot read, for example because the user's access level does not cover banking, is listed under `unavailable` with the error, and the rest is still returned.
 - Bank balances are FreeAgent's, from explained transactions, not the bank's live balance.
 

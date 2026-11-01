@@ -46,7 +46,13 @@ List tools take `page` (1 to 10000, default 1) and `per_page` (1 to 100, default
 {"count": 25, "total": 140, "page": 1, "next_page": 2, "items": [...]}
 ```
 
-`next_page` is present only when there is a next page; pass it as `page` for more. Answers are compact: FreeAgent's envelopes are unwrapped, and empty values (nulls, empty strings, empty lists) are dropped. `false` and `0` are kept. Attachments, such as an expense's receipt, keep their id, file name, type, size and description, but not FreeAgent's signed download links, which expire 30 seconds after they are issued and would make a page of expenses with receipts too large for a tool result.
+`next_page` is present only when there is a next page; pass it as `page` for more. Answers are compact JSON: FreeAgent's envelopes are unwrapped, and empty values (nulls, empty strings, empty lists) are dropped. `false` and `0` are kept. Some fields are left out of every answer:
+
+- Signed download links on attachments and the company logo (`content_src`, its thumbnails and `expires_at`). An expense's receipt keeps its id, file name, type, size and description. The links expire 30 seconds after FreeAgent issues them and are about 2,000 characters each.
+- `locked_attributes`, the field-by-field list of what is locked on an item in a locked accounting period. `is_locked` and `locked_reason` stay.
+- `ni_number` and `unique_tax_reference`: people's National Insurance numbers and tax references.
+
+A page of a list that would come to more than 80,000 characters, more than clients accept in a tool result, is refused with a `too_large` error that says which `per_page` fits.
 
 ## Errors
 
@@ -62,6 +68,7 @@ A failed tool call returns a tool error (`isError: true`) whose text starts with
 | `upstream` | FreeAgent could not be reached, timed out or answered unexpectedly; usually temporary |
 | `internal` | A problem inside the server, such as FreeAgent refusing the server's own app credentials; check the log |
 | `read_only` | The service is read-only on this server (`FREEAGENT_READ_ONLY`) |
+| `too_large` | A page of a list is too long for a tool result; ask again with the `per_page` the message gives |
 
 ## Retries and timeouts
 

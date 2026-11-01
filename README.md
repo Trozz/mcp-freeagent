@@ -81,7 +81,7 @@ FreeAgent documents HTTP Basic authentication for the app's credentials. If it r
 
 | Area | Tools |
 |---|---|
-| Company | `get_company`, `get_current_user`, `list_users`, `get_tax_timeline`, `business_snapshot` (balances, money owed each way, unexplained transactions and deadlines in one call) |
+| Company | `get_company`, `get_current_user`, `list_users`, `get_tax_timeline`, `business_snapshot` (balances, money owed each way, unexplained transactions, explanations to approve and deadlines in one call) |
 | Contacts | `search_contacts` (by name or email), `get_contact`, `create_contact`, `update_contact`, `delete_contact`, `list_notes`, `create_note` |
 | Projects and time | `list_projects`, `get_project`, `create_project`, `update_project`, `list_tasks`, `create_task`, `update_task`, `list_timeslips`, `log_time`, `update_timeslip`, `delete_timeslip`, `start_timer`, `stop_timer` |
 | Sales | `list_invoices`, `get_invoice`, `create_invoice` (from lines, or a project's unbilled time and expenses), `update_invoice`, `delete_invoice` (drafts only), `invoice_action` (mark sent, draft, scheduled, cancelled; convert to credit note; duplicate), `list_estimates`, `get_estimate`, `create_estimate`, `estimate_action`, `list_credit_notes`, `get_credit_note`, `create_credit_note`, `list_recurring_invoices`, `send_document_email`, `get_document_pdf`, `list_price_list_items`, `list_email_addresses` |

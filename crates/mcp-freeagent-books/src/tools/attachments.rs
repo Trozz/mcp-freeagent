@@ -50,6 +50,7 @@ fn label(target: Target, id: &str, item: &Value) -> String {
     let s = |k: &str| {
         item.get(k)
             .and_then(Value::as_str)
+            .map(str::trim)
             .filter(|s| !s.is_empty())
     };
     let what = match target {
@@ -74,6 +75,22 @@ fn label(target: Target, id: &str, item: &Value) -> String {
         }
     }
     out
+}
+
+/// The name of the file an upload would replace: expenses and bills hold one attachment, which
+/// a new one replaces. Explanations take several, so nothing is replaced there.
+fn replaced(target: Target, item: &Value) -> Option<String> {
+    if matches!(target, Target::Explanation) {
+        return None;
+    }
+    let a = item.get("attachment")?;
+    Some(
+        a.get("file_name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("a file")
+            .to_string(),
+    )
 }
 
 impl BooksServer {
@@ -122,13 +139,21 @@ impl BooksServer {
             )?;
             let url = format!("{base}{}/{token}", uploads::UPLOAD_PATH);
             let expires: chrono::DateTime<chrono::Utc> = expires.into();
-            Ok(json_result(&json!({
+            let mut out = json!({
                 "upload_url": url,
                 "expires_at": expires.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
                 "for": {"target": target.root(), "id": id, "item": label(target, &id, &item)},
                 "tell_the_person": "Open this link and choose the file to attach. It works once and expires in 30 minutes.",
                 "with_a_shell": format!("curl -F file=@<path to the file> {url}"),
-            })))
+            });
+            if let Some(name) = replaced(target, &item) {
+                out["replaces"] = Value::from(name.clone());
+                out["tell_the_person"] = Value::from(format!(
+                    "This {} already has a file attached ({name}); uploading replaces it. Open this link and choose the file to attach. It works once and expires in 30 minutes.",
+                    target.root().replace('_', " ")
+                ));
+            }
+            Ok(json_result(&out))
         })
         .await
     }

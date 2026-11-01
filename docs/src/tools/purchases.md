@@ -90,3 +90,13 @@ Each item of a bill's `items`:
 | `description` | |
 
 Requests to the server are limited to 1 MiB in all, so a file over about 700 KB is refused before it reaches FreeAgent.
+
+### Upload links
+
+Models cannot pass a file shared in a chat to a tool, so for those, and for anything over about 700 KB, use an upload link:
+
+| Tool | Kind | What it does | Key parameters |
+|---|---|---|---|
+| `create_upload_link` | write | A single-use link, valid for 30 minutes, where the person picks a PDF, PNG, JPEG or GIF of up to 5 MB. The server attaches it in FreeAgent as them. An expense or bill holds one file: when it already has one, `replaces` names it, because the upload replaces it | `target` (`expense`, `bill` or `bank_transaction_explanation`), `id` |
+| `get_upload_status` | read | `waiting` (with the last error, if a try failed), `uploading` or `attached` | `upload_url` |
+| `attach_file` | write | Attach a file the client can read itself, as base64 | `target`, `id`, `file_name`, `data_base64`, `description` |
