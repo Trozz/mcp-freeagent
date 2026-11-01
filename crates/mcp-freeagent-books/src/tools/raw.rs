@@ -113,10 +113,18 @@ impl BooksServer {
             let q = query_arg(p.query.as_ref())?;
             let a = c.get("api_get", &segs, &q).await?;
             let mut out = json!({"body": view::resource(&a.body)});
+            let num = |k: &str, default: u64| {
+                q.iter()
+                    .find(|(name, _)| *name == k)
+                    .and_then(|(_, v)| v.parse::<u64>().ok())
+                    .unwrap_or(default)
+            };
+            // FreeAgent's own default page size is 25.
+            let seen = num("page", 1).saturating_mul(num("per_page", 25));
             if let Some(t) = a.total {
                 out["total"] = Value::from(t);
             }
-            if a.has_next {
+            if a.has_next || a.total.is_some_and(|t| seen < t) {
                 out["has_next_page"] = Value::from(true);
             }
             Ok(json_result(&out))
