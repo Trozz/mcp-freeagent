@@ -292,7 +292,9 @@ impl ServerHandler for BooksServer {
 pub(crate) type Query = Vec<(&'static str, String)>;
 
 pub(crate) fn json_result(v: &Value) -> CallToolResult {
-    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    let mut v = v.clone();
+    view::drop_signed_links(&mut v);
+    let text = serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string());
     CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
