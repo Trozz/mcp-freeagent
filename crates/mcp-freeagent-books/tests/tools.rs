@@ -4,7 +4,7 @@ mod support;
 
 use serde_json::{Value, json};
 use support::fake_freeagent::{Canned, FakeFreeAgent};
-use support::tools::{auth, error_text, json, no_auth, params, server, text};
+use support::tools::{auth, error_text, is_error, json, no_auth, params, server, text};
 
 #[tokio::test]
 async fn tools_need_a_sign_in() {
@@ -770,4 +770,112 @@ async fn expense_lists_leave_out_receipt_download_links() {
     assert_eq!(a["file_name"], "receipt.jpg");
     assert_eq!(a["content_type"], "image/jpeg");
     assert!(a.get("content_src").is_none() && a.get("expires_at").is_none());
+}
+
+#[tokio::test]
+async fn the_snapshot_uses_freeagents_own_counts_for_every_visible_account() {
+    // Hidden accounts first, then more visible accounts than the snapshot would count by hand:
+    // every visible account still gets its counts, and no transactions are read.
+    let fake = FakeFreeAgent::start().await;
+    let mut accounts: Vec<Value> = (1..=4)
+        .map(|n| json!({"url": fake.res(&format!("bank_accounts/{n}")), "name": format!("Closed {n}"), "status": "hidden", "unexplained_transaction_count": 0}))
+        .collect();
+    accounts.extend((5..=16).map(|n| {
+        json!({"url": fake.res(&format!("bank_accounts/{n}")), "name": format!("Account {n}"), "status": "active", "unexplained_transaction_count": n, "marked_for_review_count": 1})
+    }));
+    fake.on(
+        "GET",
+        "bank_accounts",
+        Canned::ok(json!({"bank_accounts": accounts})),
+    );
+    fake.on("GET", "invoices", Canned::ok(json!({"invoices": []})));
+    fake.on("GET", "bills", Canned::ok(json!({"bills": []})));
+    fake.on(
+        "GET",
+        "company/tax_timeline",
+        Canned::ok(json!({"timeline_items": []})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.business_snapshot(params(json!({})), auth())
+            .await
+            .unwrap(),
+    );
+    let banks = v["bank_accounts"].as_array().unwrap();
+    assert_eq!(banks.len(), 12);
+    assert_eq!(banks[11]["name"], "Account 16");
+    assert_eq!(banks[11]["unexplained_transactions"], 16);
+    assert_eq!(banks[11]["explanations_to_approve"], 1);
+    assert!(
+        fake.api_log().iter().all(|l| l.path != "bank_transactions"),
+        "transactions were read"
+    );
+}
+
+#[tokio::test]
+async fn a_page_too_large_for_a_tool_result_says_what_per_page_fits() {
+    let fake = FakeFreeAgent::start().await;
+    let long = "x".repeat(2_000);
+    let invoices: Vec<Value> = (1..=100)
+        .map(|n| json!({"url": fake.res(&format!("invoices/{n}")), "comments": long}))
+        .collect();
+    fake.on("GET", "invoices", Canned::ok(json!({"invoices": invoices})));
+    let s = server(&fake);
+    let r = s
+        .list_invoices(params(json!({"per_page": 100})), auth())
+        .await
+        .unwrap();
+    assert!(is_error(&r));
+    let t = error_text(&r);
+    assert!(t.starts_with("too_large:"), "{t}");
+    let fits: usize = t
+        .split("per_page ")
+        .nth(1)
+        .and_then(|r| r.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap();
+    // About 2,050 characters an invoice: the suggestion must fit, with room to spare.
+    assert!((10..=39).contains(&fits), "{t}");
+}
+
+#[tokio::test]
+async fn an_upload_link_says_when_it_would_replace_a_receipt() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "expenses/6",
+        Canned::ok(json!({"expense": {
+            "url": fake.res("expenses/6"),
+            "description": "Breakfast ",
+            "dated_on": "2026-09-28",
+            "gross_value": "-4.5",
+            "currency": "GBP",
+            "attachment": {"url": fake.res("attachments/9"), "file_name": "old.jpg"}
+        }})),
+    );
+    fake.on(
+        "GET",
+        "expenses/7",
+        Canned::ok(json!({"expense": {"url": fake.res("expenses/7"), "description": "Lunch"}})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.create_upload_link(params(json!({"target": "expense", "id": "6"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["replaces"], "old.jpg");
+    assert!(
+        v["tell_the_person"]
+            .as_str()
+            .unwrap()
+            .contains("replaces it")
+    );
+    assert_eq!(v["for"]["item"], "Breakfast, 2026-09-28, 4.50 GBP");
+    let v = json(
+        &s.create_upload_link(params(json!({"target": "expense", "id": "7"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert!(v.get("replaces").is_none());
 }
