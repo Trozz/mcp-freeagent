@@ -175,11 +175,17 @@ impl Caller {
         query.push(("page", paging.page.to_string()));
         query.push(("per_page", paging.per_page.to_string()));
         let a = self.get(endpoint, segments, &query).await?;
+        // FreeAgent's total is the more reliable signal: the Link header has not always named
+        // the next page.
+        let more = a.has_next
+            || a.total.is_some_and(|t| {
+                u64::from(paging.page).saturating_mul(u64::from(paging.per_page)) < t
+            });
         Ok(view::page(
             view::items(&a.body, key),
             paging.page,
             a.total,
-            a.has_next,
+            more,
         ))
     }
 
@@ -208,12 +214,13 @@ impl Caller {
                 .unwrap_or_default();
             let got = items.len();
             out.extend(items);
+            let has_next = a.has_next || a.total.is_some_and(|t| (out.len() as u64) < t);
             if out.len() >= max_items {
-                let more = out.len() > max_items || a.has_next;
+                let more = out.len() > max_items || has_next;
                 out.truncate(max_items);
                 return Ok((out, more));
             }
-            if !a.has_next || got == 0 {
+            if !has_next || got == 0 {
                 return Ok((out, false));
             }
             page += 1;

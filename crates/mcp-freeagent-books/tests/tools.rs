@@ -298,13 +298,19 @@ async fn explaining_a_transaction_defaults_to_its_amount_and_date_and_checks_the
 #[tokio::test]
 async fn approving_guesses_lists_first_and_approves_only_what_was_chosen() {
     let fake = FakeFreeAgent::start().await;
+    // FreeAgent's marked_for_review view of transactions, with the guesses nested; a
+    // transaction can also hold an explanation that is already approved.
     fake.on(
         "GET",
-        "bank_transaction_explanations",
-        Canned::ok(json!({"bank_transaction_explanations": [
-            {"url": fake.res("bank_transaction_explanations/1"), "marked_for_review": true, "gross_value": "-10"},
-            {"url": fake.res("bank_transaction_explanations/2"), "marked_for_review": false},
-            {"url": fake.res("bank_transaction_explanations/3"), "marked_for_review": true},
+        "bank_transactions",
+        Canned::ok(json!({"bank_transactions": [
+            {"url": fake.res("bank_transactions/10"), "bank_transaction_explanations": [
+                {"url": fake.res("bank_transaction_explanations/1"), "marked_for_review": true, "gross_value": "-10"},
+                {"url": fake.res("bank_transaction_explanations/2"), "marked_for_review": false},
+            ]},
+            {"url": fake.res("bank_transactions/11"), "bank_transaction_explanations": [
+                {"url": fake.res("bank_transaction_explanations/3"), "marked_for_review": true},
+            ]},
         ]})),
     );
     let s = server(&fake);
@@ -313,11 +319,25 @@ async fn approving_guesses_lists_first_and_approves_only_what_was_chosen() {
             .await
             .unwrap(),
     );
-    assert_eq!(v["awaiting_approval"].as_array().unwrap().len(), 2);
+    let pending = v["awaiting_approval"].as_array().unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[1]["id"], "3");
+    let l = fake.last("GET", "bank_transactions");
+    assert_eq!(l.param("view"), Some("marked_for_review"));
     assert!(
         fake.api_log().iter().all(|l| l.method == "GET"),
         "a listing changes nothing"
     );
+    let v = json(
+        &s.list_bank_transaction_explanations(
+            params(json!({"bank_account_id": "1", "marked_for_review_only": true})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["count"], 2);
+    assert_eq!(v["items"][0]["id"], "1");
     let v = json(
         &s.approve_explanations(
             params(json!({"bank_account_id": "1", "explanation_ids": ["3"]})),
@@ -335,6 +355,52 @@ async fn approving_guesses_lists_first_and_approves_only_what_was_chosen() {
         put["bank_transaction_explanation"]["marked_for_review"],
         false
     );
+}
+
+#[tokio::test]
+async fn pages_follow_freeagents_total_when_the_link_header_names_no_next_page() {
+    // Live FreeAgent gave x-total-count but no next page we could read: list tools showed no
+    // next_page, and tools reading every page stopped after the first.
+    let fake = FakeFreeAgent::start().await;
+    let contact = |n: u32| json!({"url": fake.res(&format!("contacts/{n}")), "organisation_name": format!("Supplier {n}")});
+    let first: Vec<Value> = (1..=100).map(contact).collect();
+    let second: Vec<Value> =
+        vec![json!({"url": fake.res("contacts/101"), "organisation_name": "Acme Widgets Ltd"})];
+    fake.on_seq(
+        "GET",
+        "contacts",
+        vec![
+            Canned::ok(json!({"contacts": first})).header("x-total-count", "101"),
+            Canned::ok(json!({"contacts": second})).header("x-total-count", "101"),
+        ],
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.search_contacts(params(json!({"query": "acme"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["count"], 1, "the second page was not read: {v}");
+    assert_eq!(v["items"][0]["id"], "101");
+
+    fake.on(
+        "GET",
+        "invoices",
+        Canned::ok(json!({"invoices": [{"url": fake.res("invoices/1")}]}))
+            .header("x-total-count", "155"),
+    );
+    let v = json(
+        &s.list_invoices(params(json!({"per_page": 1})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["next_page"], 2);
+    let v = json(
+        &s.list_invoices(params(json!({"per_page": 1, "page": 155})), auth())
+            .await
+            .unwrap(),
+    );
+    assert!(v.get("next_page").is_none(), "{v}");
 }
 
 #[tokio::test]
