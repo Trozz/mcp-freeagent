@@ -77,8 +77,8 @@ impl Doc {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct LineItem {
-    /// What was sold, as it reads on the document.
-    pub description: String,
+    /// What was sold, as it reads on the document. Required for a new item.
+    pub description: Option<String>,
     /// Hours, Days, Weeks, Months, Years, Products, Services, Training, Expenses, Comment, Bills, Discount, Credit, VAT or Stock; leave out for no unit.
     pub item_type: Option<String>,
     /// How many, e.g. 7.5. Default: 1.
@@ -343,18 +343,26 @@ fn line_items(
                 ),
                 (
                     "description",
-                    Some(Value::from(required_text(
-                        &n("description"),
-                        &it.description,
-                    )?)),
+                    match (&it.description, &it.id) {
+                        (Some(d), _) => Some(Value::from(required_text(&n("description"), d)?)),
+                        (None, Some(_)) => None,
+                        (None, None) => {
+                            return Err(FaError::invalid(format!(
+                                "{} is required",
+                                n("description")
+                            )));
+                        }
+                    },
                 ),
                 ("item_type", item_type.map(Value::from)),
                 (
                     "quantity",
-                    Some(Value::from(
-                        opt_decimal(&n("quantity"), it.quantity.as_deref())?
-                            .unwrap_or_else(|| "1".into()),
-                    )),
+                    match opt_decimal(&n("quantity"), it.quantity.as_deref())? {
+                        Some(q) => Some(Value::from(q)),
+                        // A new item is one of something unless told; an existing one keeps its quantity.
+                        None if it.id.is_none() => Some(Value::from("1")),
+                        None => None,
+                    },
                 ),
                 ("price", opt_s(price)),
                 (
@@ -519,7 +527,73 @@ fn sort_arg(v: Option<&str>) -> error::Result<Option<String>> {
     Ok(Some(t))
 }
 
+/// The fields of an existing line an update keeps unless it changes them.
+const LINE_FIELDS: [&str; 7] = [
+    "description",
+    "item_type",
+    "quantity",
+    "price",
+    "sales_tax_rate",
+    "sales_tax_status",
+    "category",
+];
+
+/// Fills the fields an edit of an existing line leaves out with the line's own. FreeAgent resets
+/// what a line update does not send: changing only a line's description cleared its unit.
+fn keep_line_fields(items: &mut [Value], existing: &[Value]) {
+    for it in items {
+        let Some(m) = it.as_object_mut() else {
+            continue;
+        };
+        if m.contains_key("_destroy") {
+            continue;
+        }
+        let Some(id) = m.get("id").and_then(Value::as_str).map(String::from) else {
+            continue;
+        };
+        let Some(old) = existing
+            .iter()
+            .find(|e| e.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        else {
+            continue;
+        };
+        for k in LINE_FIELDS {
+            if !m.contains_key(k)
+                && let Some(v) = old.get(k).filter(|v| !v.is_null())
+            {
+                m.insert(k.into(), v.clone());
+            }
+        }
+    }
+}
+
 impl BooksServer {
+    /// The VAT rate for estimate lines that give none. FreeAgent fills it in on invoices and
+    /// credit notes, but stores -1 on an estimate line, which gives negative VAT. So: none for a
+    /// company not registered for VAT, 0 for a contact never charged VAT, else the company's
+    /// standard rate.
+    async fn estimate_tax_rate(&self, c: &Caller, contact: &str) -> error::Result<Option<String>> {
+        let company = c.one("company", &["company"], "company", &[]).await?;
+        if company
+            .get("sales_tax_registration_status")
+            .and_then(Value::as_str)
+            != Some("Registered")
+        {
+            return Ok(None);
+        }
+        let id = view::id_of(contact).unwrap_or_default().to_string();
+        let contact = c.one("contact", &["contacts", &id], "contact", &[]).await?;
+        if contact.get("charge_sales_tax").and_then(Value::as_str) == Some("Never") {
+            return Ok(Some("0".into()));
+        }
+        Ok(company
+            .get("sales_tax_rates")
+            .and_then(Value::as_array)
+            .and_then(|r| r.first())
+            .and_then(Value::as_str)
+            .map(String::from))
+    }
+
     /// The contact's payment terms, else 30.
     async fn payment_terms(&self, c: &Caller, contact: &str) -> u32 {
         let id = view::id_of(contact).unwrap_or_default().to_string();
@@ -697,6 +771,19 @@ impl BooksServer {
             }
             if body.is_empty() {
                 return Err(FaError::invalid("give at least one field to change"));
+            }
+            if let Some(items) = body.get_mut("invoice_items").and_then(Value::as_array_mut)
+                && items
+                    .iter()
+                    .any(|i| i.get("id").is_some() && i.get("_destroy").is_none())
+            {
+                let current = c.one("invoice", &["invoices", &id], "invoice", &[]).await?;
+                let existing = current
+                    .get("invoice_items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                keep_line_fields(items, &existing);
             }
             let out = c
                 .write(
@@ -972,7 +1059,30 @@ impl BooksServer {
                     )?)),
                 ),
             ]);
-            let body = merge(p.extra.as_ref(), typed)?;
+            let mut body = merge(p.extra.as_ref(), typed)?;
+            let needs_rate = |i: &Value| {
+                i.get("sales_tax_rate").is_none()
+                    && i.get("item_type").and_then(Value::as_str) != Some("Comment")
+            };
+            if body
+                .get("estimate_items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| items.iter().any(needs_rate))
+            {
+                let contact = body
+                    .get("contact")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if let Some(rate) = self.estimate_tax_rate(&c, &contact).await?
+                    && let Some(items) =
+                        body.get_mut("estimate_items").and_then(Value::as_array_mut)
+                {
+                    for i in items.iter_mut().filter(|i| needs_rate(i)) {
+                        i["sales_tax_rate"] = Value::from(rate.as_str());
+                    }
+                }
+            }
             let out = c
                 .write(
                     Method::POST,

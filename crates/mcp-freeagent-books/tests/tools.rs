@@ -945,3 +945,135 @@ async fn an_upload_link_says_when_it_would_replace_a_receipt() {
     );
     assert!(v.get("replaces").is_none());
 }
+
+#[tokio::test]
+async fn editing_an_invoice_line_keeps_what_the_edit_leaves_out() {
+    // Live: changing a line's description and price cleared its unit, and every edit of an
+    // existing line was sent with quantity 1.
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "invoices/9",
+        Canned::ok(json!({"invoice": {"url": fake.res("invoices/9"), "invoice_items": [
+            {"url": fake.res("invoice_items/71"), "description": "Consulting", "item_type": "Hours", "quantity": "7.5", "price": "80.0", "sales_tax_rate": "20.0", "category": fake.res("categories/001")},
+            {"url": fake.res("invoice_items/72"), "description": "Old line", "quantity": "1.0", "price": "5.0"}
+        ]}})),
+    );
+    fake.on(
+        "PUT",
+        "invoices/9",
+        Canned::ok(json!({"invoice": {"url": fake.res("invoices/9")}})),
+    );
+    let s = server(&fake);
+    let r = s
+        .update_invoice(
+            params(json!({"id": "9", "items": [
+                {"id": "71", "description": "Consulting, October"},
+                {"id": "72", "delete": true},
+                {"description": "New line", "price": "10"}
+            ]})),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(!is_error(&r), "{}", text(&r));
+    let body = fake.last("PUT", "invoices/9").body.unwrap();
+    let items = body["invoice"]["invoice_items"].as_array().unwrap();
+    assert_eq!(items[0]["id"], "71");
+    assert_eq!(items[0]["description"], "Consulting, October");
+    assert_eq!(items[0]["item_type"], "Hours");
+    assert_eq!(items[0]["quantity"], "7.5");
+    assert_eq!(items[0]["price"], "80.0");
+    assert_eq!(items[0]["sales_tax_rate"], "20.0");
+    assert_eq!(items[1], json!({"id": "72", "_destroy": 1}));
+    assert_eq!(items[2]["quantity"], "1");
+    assert!(items[2].get("id").is_none());
+
+    let r = s
+        .update_invoice(
+            params(json!({"id": "9", "items": [{"price": "10"}]})),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        error_text(&r).contains("description is required"),
+        "{}",
+        error_text(&r)
+    );
+}
+
+#[tokio::test]
+async fn estimate_lines_without_a_vat_rate_get_the_companys_rate() {
+    // Live: FreeAgent stored -1 as the rate of an estimate line given none, so a 10.00
+    // estimate came to 9.90.
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "company",
+        Canned::ok(json!({"company": {"url": fake.res("company"), "currency": "GBP", "sales_tax_registration_status": "Registered", "sales_tax_rates": ["20.0", "5.0", "0.0"]}})),
+    );
+    fake.on(
+        "GET",
+        "contacts/5",
+        Canned::ok(json!({"contact": {"url": fake.res("contacts/5"), "charge_sales_tax": "Auto"}})),
+    );
+    fake.on(
+        "GET",
+        "contacts/6",
+        Canned::ok(
+            json!({"contact": {"url": fake.res("contacts/6"), "charge_sales_tax": "Never"}}),
+        ),
+    );
+    fake.on(
+        "POST",
+        "estimates",
+        Canned::ok(json!({"estimate": {"url": fake.res("estimates/1")}})),
+    );
+    let s = server(&fake);
+    s.create_estimate(
+        params(json!({"contact_id": "5", "reference": "EST-1", "items": [
+            {"description": "Work", "price": "5", "quantity": "2"},
+            {"description": "Zero rated", "price": "1", "sales_tax_rate": "0"}
+        ]})),
+        auth(),
+    )
+    .await
+    .unwrap();
+    let body = fake.last("POST", "estimates").body.unwrap();
+    let items = body["estimate"]["estimate_items"].as_array().unwrap();
+    assert_eq!(items[0]["sales_tax_rate"], "20.0");
+    assert_eq!(items[1]["sales_tax_rate"], "0");
+    s.create_estimate(
+        params(json!({"contact_id": "6", "reference": "EST-2", "items": [{"description": "Work", "price": "5"}]})),
+        auth(),
+    )
+    .await
+    .unwrap();
+    let body = fake.last("POST", "estimates").body.unwrap();
+    assert_eq!(body["estimate"]["estimate_items"][0]["sales_tax_rate"], "0");
+}
+
+#[tokio::test]
+async fn mileage_is_claimed_under_the_mileage_category() {
+    // Live: FreeAgent refused the claim with "Invalid nominal code Mileage".
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "POST",
+        "expenses",
+        Canned::ok(json!({"expense": {"url": fake.res("expenses/3")}})),
+    );
+    let s = server(&fake);
+    let r = s
+        .create_mileage_claim(
+            params(
+                json!({"dated_on": "2026-11-01", "description": "Leeds to York", "mileage": "25"}),
+            ),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(!is_error(&r), "{}", text(&r));
+    let body = fake.last("POST", "expenses").body.unwrap();
+    assert_eq!(body["expense"]["category"], fake.res("categories/249"));
+}

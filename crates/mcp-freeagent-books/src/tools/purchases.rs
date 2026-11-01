@@ -833,7 +833,8 @@ impl BooksServer {
             };
             let body = fields(vec![
                 ("user", Some(Value::from(user))),
-                ("category", Some(Value::from("Mileage"))),
+                // FreeAgent files mileage under its Mileage category, nominal code 249.
+                ("category", Some(Value::from(category_ref(&c, "249")?))),
                 (
                     "dated_on",
                     Some(Value::from(required_date("dated_on", &p.dated_on)?)),
