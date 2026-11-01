@@ -54,7 +54,7 @@ pub struct ListExplanationsParams {
     pub from_date: Option<String>,
     pub to_date: Option<String>,
     pub updated_since: Option<String>,
-    /// Only explanations FreeAgent guessed that await approval.
+    /// Only explanations FreeAgent guessed that await approval, newest included. Pages then count transactions.
     pub marked_for_review_only: Option<bool>,
     pub page: Option<u32>,
     pub per_page: Option<u32>,
@@ -335,6 +335,21 @@ fn check_target(body: &Map<String, Value>) -> error::Result<()> {
     Ok(())
 }
 
+/// The explanations awaiting approval in transactions from FreeAgent's `marked_for_review` view,
+/// shaped for output. The view holds transactions; their guessed explanations are nested.
+fn awaiting(transactions: &[Value]) -> Vec<Value> {
+    transactions
+        .iter()
+        .filter_map(|t| {
+            t.get("bank_transaction_explanations")
+                .and_then(Value::as_array)
+        })
+        .flatten()
+        .filter(|e| e.get("marked_for_review").and_then(Value::as_bool) == Some(true))
+        .map(view::resource)
+        .collect()
+}
+
 #[tool_router(router = banking_router, vis = "pub(crate)")]
 impl BooksServer {
     #[tool(
@@ -500,7 +515,34 @@ impl BooksServer {
                 "updated_since",
                 since_arg(p.updated_since.as_deref())?,
             );
-            let mut out = c
+            if p.marked_for_review_only == Some(true) {
+                // FreeAgent lists explanations oldest first and cannot filter them; its
+                // marked_for_review view of transactions finds the guesses directly. Pages here
+                // count transactions.
+                q.push(("view", "marked_for_review".into()));
+                let mut out = c
+                    .list(
+                        "bank_transactions",
+                        &["bank_transactions"],
+                        "bank_transactions",
+                        q,
+                        pg,
+                    )
+                    .await?;
+                let pending = awaiting(
+                    out["items"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                );
+                out["count"] = Value::from(pending.len());
+                out["items"] = Value::Array(pending);
+                if let Value::Object(m) = &mut out {
+                    m.remove("total");
+                }
+                return Ok(json_result(&out));
+            }
+            let out = c
                 .list(
                     "bank_transaction_explanations",
                     &["bank_transaction_explanations"],
@@ -509,16 +551,6 @@ impl BooksServer {
                     pg,
                 )
                 .await?;
-            if p.marked_for_review_only == Some(true)
-                && let Some(items) = out.get_mut("items").and_then(Value::as_array_mut)
-            {
-                items.retain(|e| e.get("marked_for_review").and_then(Value::as_bool) == Some(true));
-                let n = items.len();
-                out["count"] = Value::from(n);
-                if let Value::Object(m) = &mut out {
-                    m.remove("total");
-                }
-            }
             Ok(json_result(&out))
         })
         .await
@@ -708,17 +740,16 @@ impl BooksServer {
                 ids
             } else {
                 let (from, to) = date_range(p.from_date.as_deref(), p.to_date.as_deref())?;
-                let mut q: Query = vec![("bank_account", account)];
+                let mut q: Query = vec![
+                    ("bank_account", account),
+                    ("view", "marked_for_review".into()),
+                ];
                 push(&mut q, "from_date", from);
                 push(&mut q, "to_date", to);
-                let (all, more) = c
-                    .all("bank_transaction_explanations", &["bank_transaction_explanations"], "bank_transaction_explanations", q, 2000)
+                let (transactions, more) = c
+                    .all("bank_transactions", &["bank_transactions"], "bank_transactions", q, 1000)
                     .await?;
-                let pending: Vec<Value> = all
-                    .iter()
-                    .filter(|e| e.get("marked_for_review").and_then(Value::as_bool) == Some(true))
-                    .map(view::resource)
-                    .collect();
+                let pending = awaiting(&transactions);
                 if p.approve_all != Some(true) {
                     let mut out = json!({
                         "awaiting_approval": pending,

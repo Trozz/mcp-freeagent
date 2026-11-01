@@ -165,13 +165,25 @@ fn map_status(
     }
 }
 
+/// Whether a `Link` header names a next page: a link whose `rel` is `next`, however it is quoted
+/// (`rel="next"`, `rel='next'` or `rel=next`) and among other relations (`rel="next last"`).
 fn has_next(headers: &HeaderMap) -> bool {
     headers
         .get_all(reqwest::header::LINK)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .any(|part| part.contains("rel=\"next\"") || part.contains("rel=next"))
+        .any(|link| {
+            link.split(';').skip(1).any(|param| {
+                param.split_once('=').is_some_and(|(k, v)| {
+                    k.trim().eq_ignore_ascii_case("rel")
+                        && v.trim()
+                            .trim_matches(['"', '\''])
+                            .split_whitespace()
+                            .any(|r| r.eq_ignore_ascii_case("next"))
+                })
+            })
+        })
 }
 
 impl FaClient {
@@ -555,6 +567,22 @@ mod tests {
         h.insert(
             reqwest::header::LINK,
             "<https://api.freeagent.com/v2/invoices?page=1>; rel=\"first\""
+                .parse()
+                .unwrap(),
+        );
+        assert!(!has_next(&h));
+        for next in [
+            "<https://api.freeagent.com/v2/invoices?page=2>; rel='next'",
+            "<https://api.freeagent.com/v2/invoices?page=2>; rel=next",
+            "<https://api.freeagent.com/v2/invoices?page=2>;rel=\"next last\"",
+            "<https://api.freeagent.com/v2/invoices?page=2>; REL=\"Next\"",
+        ] {
+            h.insert(reqwest::header::LINK, next.parse().unwrap());
+            assert!(has_next(&h), "{next}");
+        }
+        h.insert(
+            reqwest::header::LINK,
+            "<https://api.freeagent.com/v2/invoices?page=9&next=1>; rel=\"last\""
                 .parse()
                 .unwrap(),
         );

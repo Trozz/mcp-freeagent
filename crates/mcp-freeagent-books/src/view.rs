@@ -50,6 +50,60 @@ fn add_ids(v: &mut Value) {
     }
 }
 
+/// The fields of a FreeAgent attachment (or the company logo) that hold signed download links,
+/// and when they expire. Each link is about 2,000 characters and FreeAgent issues it for 30
+/// seconds, so in a tool result it only costs space: a page of 50 expenses with receipts came to
+/// over 200,000 characters, most of it these links.
+const SIGNED_LINKS: [&str; 4] = [
+    "content_src",
+    "content_src_medium",
+    "content_src_small",
+    "expires_at",
+];
+
+/// Fields left out of every tool result.
+/// - `locked_attributes` names, field by field, what FreeAgent locks on an item in a locked
+///   accounting period: up to 32 names, repeated on every bill line. `is_locked` and
+///   `locked_reason` say what matters.
+/// - `ni_number` and `unique_tax_reference` are a person's National Insurance number and tax
+///   reference. Bookkeeping through this server never needs them, and a tool result is kept in
+///   the chat.
+const LEFT_OUT: [&str; 3] = ["locked_attributes", "ni_number", "unique_tax_reference"];
+
+/// Whether a URL is a signed, expiring download link rather than a FreeAgent API URL.
+fn is_signed(url: &str) -> bool {
+    url.contains("X-Amz-Signature")
+}
+
+/// Removes, recursively, what a tool result should not carry: signed download links (and an
+/// attachment `url` and `id` that are one), and the fields in [`LEFT_OUT`]. An attachment keeps
+/// its file name, type, size, description and, when FreeAgent gives one, its API url and id.
+pub fn for_output(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for k in LEFT_OUT {
+                map.remove(k);
+            }
+            if map.contains_key("content_src") {
+                for k in SIGNED_LINKS {
+                    map.remove(k);
+                }
+                if map
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_signed)
+                {
+                    map.remove("url");
+                    map.remove("id");
+                }
+            }
+            map.values_mut().for_each(for_output);
+        }
+        Value::Array(items) => items.iter_mut().for_each(for_output),
+        _ => {}
+    }
+}
+
 /// One resource for output: ids added, empty values dropped.
 pub fn resource(v: &Value) -> Value {
     let mut v = v.clone();
@@ -169,6 +223,68 @@ mod tests {
         assert_eq!(r["paid_value"], "0.0");
         assert_eq!(r["is_interim"], false);
         assert!(r.get("comments").is_none() && r.get("nothing").is_none());
+    }
+
+    #[test]
+    fn signed_attachment_links_are_dropped() {
+        let mut v = json!({
+            "items": [{
+                "url": "https://api.freeagent.com/v2/expenses/1",
+                "expires_at": "2026-12-01",
+                "attachment": {
+                    "url": "https://api.freeagent.com/v2/attachments/9",
+                    "content_src": "https://s3.example/a.jpg?X-Amz-Signature=x",
+                    "content_src_medium": "https://thumbs.example/m",
+                    "content_src_small": "https://thumbs.example/s",
+                    "content_type": "image/jpeg",
+                    "expires_at": "2026-11-01T20:29:40.000Z",
+                    "file_name": "receipt.jpg",
+                    "file_size": 531406
+                }
+            }]
+        });
+        for_output(&mut v);
+        let a = &v["items"][0]["attachment"];
+        assert_eq!(
+            a,
+            &json!({
+                "url": "https://api.freeagent.com/v2/attachments/9",
+                "content_type": "image/jpeg",
+                "file_name": "receipt.jpg",
+                "file_size": 531406
+            })
+        );
+        // Only attachments lose `expires_at`.
+        assert_eq!(v["items"][0]["expires_at"], "2026-12-01");
+    }
+
+    #[test]
+    fn signed_logo_urls_lock_lists_and_tax_ids_are_left_out() {
+        let mut v = json!({
+            "logo": {
+                "url": "https://s3.example/logo.png?X-Amz-Signature=x",
+                "id": "logo.png",
+                "content_src": "https://s3.example/logo.png?X-Amz-Signature=x",
+                "file_name": "logo.png",
+                "content_type": "image/png"
+            },
+            "bill_items": [{"description": "x", "locked_attributes": ["total_value"], "locked_reason": "locked"}],
+            "is_locked": true,
+            "locked_attributes": ["reference"],
+            "ni_number": "AB123456C",
+            "unique_tax_reference": "1234567890",
+            "first_name": "Ann"
+        });
+        for_output(&mut v);
+        assert_eq!(
+            v,
+            json!({
+                "logo": {"file_name": "logo.png", "content_type": "image/png"},
+                "bill_items": [{"description": "x", "locked_reason": "locked"}],
+                "is_locked": true,
+                "first_name": "Ann"
+            })
+        );
     }
 
     #[test]

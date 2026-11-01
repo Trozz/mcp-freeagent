@@ -4,7 +4,7 @@ mod support;
 
 use serde_json::{Value, json};
 use support::fake_freeagent::{Canned, FakeFreeAgent};
-use support::tools::{auth, error_text, json, no_auth, params, server, text};
+use support::tools::{auth, error_text, is_error, json, no_auth, params, server, text};
 
 #[tokio::test]
 async fn tools_need_a_sign_in() {
@@ -298,13 +298,19 @@ async fn explaining_a_transaction_defaults_to_its_amount_and_date_and_checks_the
 #[tokio::test]
 async fn approving_guesses_lists_first_and_approves_only_what_was_chosen() {
     let fake = FakeFreeAgent::start().await;
+    // FreeAgent's marked_for_review view of transactions, with the guesses nested; a
+    // transaction can also hold an explanation that is already approved.
     fake.on(
         "GET",
-        "bank_transaction_explanations",
-        Canned::ok(json!({"bank_transaction_explanations": [
-            {"url": fake.res("bank_transaction_explanations/1"), "marked_for_review": true, "gross_value": "-10"},
-            {"url": fake.res("bank_transaction_explanations/2"), "marked_for_review": false},
-            {"url": fake.res("bank_transaction_explanations/3"), "marked_for_review": true},
+        "bank_transactions",
+        Canned::ok(json!({"bank_transactions": [
+            {"url": fake.res("bank_transactions/10"), "bank_transaction_explanations": [
+                {"url": fake.res("bank_transaction_explanations/1"), "marked_for_review": true, "gross_value": "-10"},
+                {"url": fake.res("bank_transaction_explanations/2"), "marked_for_review": false},
+            ]},
+            {"url": fake.res("bank_transactions/11"), "bank_transaction_explanations": [
+                {"url": fake.res("bank_transaction_explanations/3"), "marked_for_review": true},
+            ]},
         ]})),
     );
     let s = server(&fake);
@@ -313,11 +319,25 @@ async fn approving_guesses_lists_first_and_approves_only_what_was_chosen() {
             .await
             .unwrap(),
     );
-    assert_eq!(v["awaiting_approval"].as_array().unwrap().len(), 2);
+    let pending = v["awaiting_approval"].as_array().unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[1]["id"], "3");
+    let l = fake.last("GET", "bank_transactions");
+    assert_eq!(l.param("view"), Some("marked_for_review"));
     assert!(
         fake.api_log().iter().all(|l| l.method == "GET"),
         "a listing changes nothing"
     );
+    let v = json(
+        &s.list_bank_transaction_explanations(
+            params(json!({"bank_account_id": "1", "marked_for_review_only": true})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["count"], 2);
+    assert_eq!(v["items"][0]["id"], "1");
     let v = json(
         &s.approve_explanations(
             params(json!({"bank_account_id": "1", "explanation_ids": ["3"]})),
@@ -335,6 +355,52 @@ async fn approving_guesses_lists_first_and_approves_only_what_was_chosen() {
         put["bank_transaction_explanation"]["marked_for_review"],
         false
     );
+}
+
+#[tokio::test]
+async fn pages_follow_freeagents_total_when_the_link_header_names_no_next_page() {
+    // Live FreeAgent gave x-total-count but no next page we could read: list tools showed no
+    // next_page, and tools reading every page stopped after the first.
+    let fake = FakeFreeAgent::start().await;
+    let contact = |n: u32| json!({"url": fake.res(&format!("contacts/{n}")), "organisation_name": format!("Supplier {n}")});
+    let first: Vec<Value> = (1..=100).map(contact).collect();
+    let second: Vec<Value> =
+        vec![json!({"url": fake.res("contacts/101"), "organisation_name": "Acme Widgets Ltd"})];
+    fake.on_seq(
+        "GET",
+        "contacts",
+        vec![
+            Canned::ok(json!({"contacts": first})).header("x-total-count", "101"),
+            Canned::ok(json!({"contacts": second})).header("x-total-count", "101"),
+        ],
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.search_contacts(params(json!({"query": "acme"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["count"], 1, "the second page was not read: {v}");
+    assert_eq!(v["items"][0]["id"], "101");
+
+    fake.on(
+        "GET",
+        "invoices",
+        Canned::ok(json!({"invoices": [{"url": fake.res("invoices/1")}]}))
+            .header("x-total-count", "155"),
+    );
+    let v = json(
+        &s.list_invoices(params(json!({"per_page": 1})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["next_page"], 2);
+    let v = json(
+        &s.list_invoices(params(json!({"per_page": 1, "page": 155})), auth())
+            .await
+            .unwrap(),
+    );
+    assert!(v.get("next_page").is_none(), "{v}");
 }
 
 #[tokio::test]
@@ -720,4 +786,294 @@ async fn upload_links_belong_to_whoever_made_them() {
         .await
         .unwrap();
     assert!(error_text(&theirs).starts_with("not_found:"));
+}
+
+#[tokio::test]
+async fn expense_lists_leave_out_receipt_download_links() {
+    // FreeAgent signs three ~2,000 character download links into every attachment, valid for
+    // 30 seconds. Fifty expenses with receipts came to over 200,000 characters, too much for a
+    // tool result.
+    let fake = FakeFreeAgent::start().await;
+    let link = format!(
+        "https://s3.example/receipt.jpg?X-Amz-Signature={}",
+        "a".repeat(2000)
+    );
+    let expense = |n: u32| {
+        json!({
+            "url": fake.res(&format!("expenses/{n}")),
+            "description": "Breakfast",
+            "gross_value": "-4.5",
+            "attachment": {
+                "url": fake.res(&format!("attachments/{n}")),
+                "content_src": link,
+                "content_src_medium": link,
+                "content_src_small": link,
+                "content_type": "image/jpeg",
+                "expires_at": "2026-11-01T20:29:40.000Z",
+                "file_name": "receipt.jpg",
+                "file_size": 531406
+            }
+        })
+    };
+    let expenses: Vec<Value> = (1..=50).map(expense).collect();
+    fake.on("GET", "expenses", Canned::ok(json!({"expenses": expenses})));
+    let s = server(&fake);
+    let r = s
+        .list_expenses(params(json!({"per_page": 50})), auth())
+        .await
+        .unwrap();
+    let t = text(&r);
+    assert!(!t.contains("X-Amz"), "signed links left in the result");
+    assert!(
+        t.len() < 40_000,
+        "50 expenses came to {} characters",
+        t.len()
+    );
+    let v = json(&r);
+    assert_eq!(v["count"], 50);
+    let a = &v["items"][0]["attachment"];
+    assert_eq!(a["id"], "1");
+    assert_eq!(a["file_name"], "receipt.jpg");
+    assert_eq!(a["content_type"], "image/jpeg");
+    assert!(a.get("content_src").is_none() && a.get("expires_at").is_none());
+}
+
+#[tokio::test]
+async fn the_snapshot_uses_freeagents_own_counts_for_every_visible_account() {
+    // Hidden accounts first, then more visible accounts than the snapshot would count by hand:
+    // every visible account still gets its counts, and no transactions are read.
+    let fake = FakeFreeAgent::start().await;
+    let mut accounts: Vec<Value> = (1..=4)
+        .map(|n| json!({"url": fake.res(&format!("bank_accounts/{n}")), "name": format!("Closed {n}"), "status": "hidden", "unexplained_transaction_count": 0}))
+        .collect();
+    accounts.extend((5..=16).map(|n| {
+        json!({"url": fake.res(&format!("bank_accounts/{n}")), "name": format!("Account {n}"), "status": "active", "unexplained_transaction_count": n, "marked_for_review_count": 1})
+    }));
+    fake.on(
+        "GET",
+        "bank_accounts",
+        Canned::ok(json!({"bank_accounts": accounts})),
+    );
+    fake.on("GET", "invoices", Canned::ok(json!({"invoices": []})));
+    fake.on("GET", "bills", Canned::ok(json!({"bills": []})));
+    fake.on(
+        "GET",
+        "company/tax_timeline",
+        Canned::ok(json!({"timeline_items": []})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.business_snapshot(params(json!({})), auth())
+            .await
+            .unwrap(),
+    );
+    let banks = v["bank_accounts"].as_array().unwrap();
+    assert_eq!(banks.len(), 12);
+    assert_eq!(banks[11]["name"], "Account 16");
+    assert_eq!(banks[11]["unexplained_transactions"], 16);
+    assert_eq!(banks[11]["explanations_to_approve"], 1);
+    assert!(
+        fake.api_log().iter().all(|l| l.path != "bank_transactions"),
+        "transactions were read"
+    );
+}
+
+#[tokio::test]
+async fn a_page_too_large_for_a_tool_result_says_what_per_page_fits() {
+    let fake = FakeFreeAgent::start().await;
+    let long = "x".repeat(2_000);
+    let invoices: Vec<Value> = (1..=100)
+        .map(|n| json!({"url": fake.res(&format!("invoices/{n}")), "comments": long}))
+        .collect();
+    fake.on("GET", "invoices", Canned::ok(json!({"invoices": invoices})));
+    let s = server(&fake);
+    let r = s
+        .list_invoices(params(json!({"per_page": 100})), auth())
+        .await
+        .unwrap();
+    assert!(is_error(&r));
+    let t = error_text(&r);
+    assert!(t.starts_with("too_large:"), "{t}");
+    let fits: usize = t
+        .split("per_page ")
+        .nth(1)
+        .and_then(|r| r.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap();
+    // About 2,050 characters an invoice: the suggestion must fit, with room to spare.
+    assert!((10..=39).contains(&fits), "{t}");
+}
+
+#[tokio::test]
+async fn an_upload_link_says_when_it_would_replace_a_receipt() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "expenses/6",
+        Canned::ok(json!({"expense": {
+            "url": fake.res("expenses/6"),
+            "description": "Breakfast ",
+            "dated_on": "2026-09-28",
+            "gross_value": "-4.5",
+            "currency": "GBP",
+            "attachment": {"url": fake.res("attachments/9"), "file_name": "old.jpg"}
+        }})),
+    );
+    fake.on(
+        "GET",
+        "expenses/7",
+        Canned::ok(json!({"expense": {"url": fake.res("expenses/7"), "description": "Lunch"}})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.create_upload_link(params(json!({"target": "expense", "id": "6"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["replaces"], "old.jpg");
+    assert!(
+        v["tell_the_person"]
+            .as_str()
+            .unwrap()
+            .contains("replaces it")
+    );
+    assert_eq!(v["for"]["item"], "Breakfast, 2026-09-28, 4.50 GBP");
+    let v = json(
+        &s.create_upload_link(params(json!({"target": "expense", "id": "7"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert!(v.get("replaces").is_none());
+}
+
+#[tokio::test]
+async fn editing_an_invoice_line_keeps_what_the_edit_leaves_out() {
+    // Live: changing a line's description and price cleared its unit, and every edit of an
+    // existing line was sent with quantity 1.
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "invoices/9",
+        Canned::ok(json!({"invoice": {"url": fake.res("invoices/9"), "invoice_items": [
+            {"url": fake.res("invoice_items/71"), "description": "Consulting", "item_type": "Hours", "quantity": "7.5", "price": "80.0", "sales_tax_rate": "20.0", "category": fake.res("categories/001")},
+            {"url": fake.res("invoice_items/72"), "description": "Old line", "quantity": "1.0", "price": "5.0"}
+        ]}})),
+    );
+    fake.on(
+        "PUT",
+        "invoices/9",
+        Canned::ok(json!({"invoice": {"url": fake.res("invoices/9")}})),
+    );
+    let s = server(&fake);
+    let r = s
+        .update_invoice(
+            params(json!({"id": "9", "items": [
+                {"id": "71", "description": "Consulting, October"},
+                {"id": "72", "delete": true},
+                {"description": "New line", "price": "10"}
+            ]})),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(!is_error(&r), "{}", text(&r));
+    let body = fake.last("PUT", "invoices/9").body.unwrap();
+    let items = body["invoice"]["invoice_items"].as_array().unwrap();
+    assert_eq!(items[0]["id"], "71");
+    assert_eq!(items[0]["description"], "Consulting, October");
+    assert_eq!(items[0]["item_type"], "Hours");
+    assert_eq!(items[0]["quantity"], "7.5");
+    assert_eq!(items[0]["price"], "80.0");
+    assert_eq!(items[0]["sales_tax_rate"], "20.0");
+    assert_eq!(items[1], json!({"id": "72", "_destroy": 1}));
+    assert_eq!(items[2]["quantity"], "1");
+    assert!(items[2].get("id").is_none());
+
+    let r = s
+        .update_invoice(
+            params(json!({"id": "9", "items": [{"price": "10"}]})),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        error_text(&r).contains("description is required"),
+        "{}",
+        error_text(&r)
+    );
+}
+
+#[tokio::test]
+async fn estimate_lines_without_a_vat_rate_get_the_companys_rate() {
+    // Live: FreeAgent stored -1 as the rate of an estimate line given none, so a 10.00
+    // estimate came to 9.90.
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "company",
+        Canned::ok(json!({"company": {"url": fake.res("company"), "currency": "GBP", "sales_tax_registration_status": "Registered", "sales_tax_rates": ["20.0", "5.0", "0.0"]}})),
+    );
+    fake.on(
+        "GET",
+        "contacts/5",
+        Canned::ok(json!({"contact": {"url": fake.res("contacts/5"), "charge_sales_tax": "Auto"}})),
+    );
+    fake.on(
+        "GET",
+        "contacts/6",
+        Canned::ok(
+            json!({"contact": {"url": fake.res("contacts/6"), "charge_sales_tax": "Never"}}),
+        ),
+    );
+    fake.on(
+        "POST",
+        "estimates",
+        Canned::ok(json!({"estimate": {"url": fake.res("estimates/1")}})),
+    );
+    let s = server(&fake);
+    s.create_estimate(
+        params(json!({"contact_id": "5", "reference": "EST-1", "items": [
+            {"description": "Work", "price": "5", "quantity": "2"},
+            {"description": "Zero rated", "price": "1", "sales_tax_rate": "0"}
+        ]})),
+        auth(),
+    )
+    .await
+    .unwrap();
+    let body = fake.last("POST", "estimates").body.unwrap();
+    let items = body["estimate"]["estimate_items"].as_array().unwrap();
+    assert_eq!(items[0]["sales_tax_rate"], "20.0");
+    assert_eq!(items[1]["sales_tax_rate"], "0");
+    s.create_estimate(
+        params(json!({"contact_id": "6", "reference": "EST-2", "items": [{"description": "Work", "price": "5"}]})),
+        auth(),
+    )
+    .await
+    .unwrap();
+    let body = fake.last("POST", "estimates").body.unwrap();
+    assert_eq!(body["estimate"]["estimate_items"][0]["sales_tax_rate"], "0");
+}
+
+#[tokio::test]
+async fn mileage_is_claimed_under_the_mileage_category() {
+    // Live: FreeAgent refused the claim with "Invalid nominal code Mileage".
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "POST",
+        "expenses",
+        Canned::ok(json!({"expense": {"url": fake.res("expenses/3")}})),
+    );
+    let s = server(&fake);
+    let r = s
+        .create_mileage_claim(
+            params(
+                json!({"dated_on": "2026-11-01", "description": "Leeds to York", "mileage": "25"}),
+            ),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(!is_error(&r), "{}", text(&r));
+    let body = fake.last("POST", "expenses").body.unwrap();
+    assert_eq!(body["expense"]["category"], fake.res("categories/249"));
 }

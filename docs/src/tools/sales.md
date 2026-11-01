@@ -82,14 +82,14 @@ Each item of `items` on invoices, estimates and credit notes:
 
 | Field | Meaning |
 |---|---|
-| `description` | What was sold, as it reads on the document. Required |
-| `quantity` | How many, such as `7.5`. Default: 1 |
+| `description` | What was sold, as it reads on the document. Required for a new item |
+| `quantity` | How many, such as `7.5`. Default for a new item: 1 |
 | `price` | Price per unit before VAT, such as `80` |
 | `item_type` | `Hours`, `Days`, `Weeks`, `Months`, `Years`, `Products`, `Services`, `Training`, `Expenses`, `Comment`, `Bills`, `Discount`, `Credit`, `VAT` or `Stock`; leave out for no unit |
 | `category` | Income category as a nominal code, such as `001` (Sales). Default: the company's sales category |
-| `sales_tax_rate` | VAT percentage, such as `20`, `5` or `0`. Default: from the contact's `charge_sales_tax` setting |
+| `sales_tax_rate` | VAT percentage, such as `20`, `5` or `0`. Default: from the contact's `charge_sales_tax` setting; on an estimate, the company's standard rate, or 0 for a contact never charged VAT |
 | `sales_tax_status` | `TAXABLE`, `EXEMPT` or `OUT_OF_SCOPE` |
-| `id`, `delete` | On update: the id of an existing item to change, and `delete: true` to remove it. Leave `id` out to add an item |
+| `id`, `delete` | On update: the id of an existing item to change, and `delete: true` to remove it. Leave `id` out to add an item. An existing item keeps every field the update does not give |
 
 ## Sending and documents
 

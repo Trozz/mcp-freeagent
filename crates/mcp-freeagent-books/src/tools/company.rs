@@ -25,7 +25,8 @@ pub struct NoParams {}
 
 /// Most open invoices or bills summed in the snapshot.
 const SNAPSHOT_ITEMS: usize = 500;
-/// Most bank accounts whose unexplained transactions are counted.
+/// Most bank accounts whose unexplained transactions are counted by hand, when FreeAgent does not
+/// give the count on the account.
 const SNAPSHOT_ACCOUNTS: usize = 10;
 
 /// Count and total of `due_value`, and of those overdue, for open invoices or bills.
@@ -106,7 +107,8 @@ impl BooksServer {
             }
         };
         let mut banks = Vec::new();
-        for (i, a) in accounts.iter().enumerate() {
+        let mut counted = 0;
+        for a in &accounts {
             if a.get("status").and_then(Value::as_str) == Some("hidden") {
                 continue;
             }
@@ -118,8 +120,15 @@ impl BooksServer {
                 "currency": a.get("currency"),
                 "current_balance": a.get("current_balance"),
                 "latest_activity_date": a.get("latest_activity_date"),
+                "unexplained_transactions": a.get("unexplained_transaction_count"),
+                "explanations_to_approve": a.get("marked_for_review_count"),
             });
-            if i < SNAPSHOT_ACCOUNTS && !url.is_empty() {
+            // FreeAgent counts both on each account; count by hand only if it did not.
+            if a.get("unexplained_transaction_count").is_none()
+                && counted < SNAPSHOT_ACCOUNTS
+                && !url.is_empty()
+            {
+                counted += 1;
                 let q: Query = vec![
                     ("bank_account", url.to_string()),
                     ("view", "unexplained".into()),
@@ -297,7 +306,7 @@ impl BooksServer {
     }
 
     #[tool(
-        description = "Where the business stands, in one call: company basics, each bank account's balance and number of unexplained transactions, money owed to you (open and overdue invoices) and owed by you (open and overdue bills), and the next tax deadlines. Sections it could not read are listed under unavailable.",
+        description = "Where the business stands, in one call: company basics, each bank account's balance, unexplained transactions and explanations to approve, money owed to you (open and overdue invoices) and owed by you (open and overdue bills), and the next tax deadlines. Sections it could not read are listed under unavailable.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub async fn business_snapshot(

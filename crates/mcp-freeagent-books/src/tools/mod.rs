@@ -175,11 +175,17 @@ impl Caller {
         query.push(("page", paging.page.to_string()));
         query.push(("per_page", paging.per_page.to_string()));
         let a = self.get(endpoint, segments, &query).await?;
+        // FreeAgent's total is the more reliable signal: the Link header has not always named
+        // the next page.
+        let more = a.has_next
+            || a.total.is_some_and(|t| {
+                u64::from(paging.page).saturating_mul(u64::from(paging.per_page)) < t
+            });
         Ok(view::page(
             view::items(&a.body, key),
             paging.page,
             a.total,
-            a.has_next,
+            more,
         ))
     }
 
@@ -208,12 +214,13 @@ impl Caller {
                 .unwrap_or_default();
             let got = items.len();
             out.extend(items);
+            let has_next = a.has_next || a.total.is_some_and(|t| (out.len() as u64) < t);
             if out.len() >= max_items {
-                let more = out.len() > max_items || a.has_next;
+                let more = out.len() > max_items || has_next;
                 out.truncate(max_items);
                 return Ok((out, more));
             }
-            if !a.has_next || got == 0 {
+            if !has_next || got == 0 {
                 return Ok((out, false));
             }
             page += 1;
@@ -291,8 +298,26 @@ impl ServerHandler for BooksServer {
 /// Query parameters of a FreeAgent request.
 pub(crate) type Query = Vec<(&'static str, String)>;
 
+/// The most characters a page of a list may come to. Clients cut or refuse longer tool results
+/// (Claude Code's default limit is 25,000 tokens, about 80,000 characters of JSON), and a model
+/// cannot recover from that the way it can from a clear error.
+pub const MAX_RESULT_CHARS: usize = 80_000;
+
+/// A tool result: `v` as compact JSON, without what [`view::for_output`] leaves out. A page of a
+/// list (`items` with more than one item) longer than [`MAX_RESULT_CHARS`] becomes an error that
+/// says what per_page fits.
 pub(crate) fn json_result(v: &Value) -> CallToolResult {
-    let text = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    let mut v = v.clone();
+    view::for_output(&mut v);
+    let text = serde_json::to_string(&v).unwrap_or_default();
+    let count = v.get("items").and_then(Value::as_array).map_or(0, Vec::len);
+    if text.len() > MAX_RESULT_CHARS && count > 1 {
+        let fits = (count * MAX_RESULT_CHARS * 3 / 4 / text.len()).max(1);
+        return CallToolResult::error(vec![ContentBlock::text(format!(
+            "too_large: these {count} items came to {} characters, more than the {MAX_RESULT_CHARS} a tool result can carry. Ask again with per_page {fits} (page numbers then count in steps of {fits}), or narrow the dates.",
+            text.len()
+        ))]);
+    }
     CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
