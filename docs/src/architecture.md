@@ -66,5 +66,5 @@ sequenceDiagram
 - **No database.** FreeAgent is the only store. The server keeps access tokens in memory, and the token store file holds only replaced refresh tokens, encrypted per person.
 - **People sign in as themselves.** The server holds an OAuth app, not a credential. Every call runs with the signed-in person's FreeAgent token, so FreeAgent's own access levels decide what they can do.
 - **Writes are never retried** once they reach FreeAgent, so a slow create cannot happen twice. Reads are retried once.
-- **Compact answers.** FreeAgent's JSON is unwrapped, empty values are dropped and every `url` gets an `id` beside it, so models spend fewer tokens and can pass ids back directly.
+- **Compact answers.** FreeAgent's JSON is unwrapped, empty values are dropped and every `url` gets an `id` beside it, so models spend fewer tokens and can pass ids back directly. Attachments lose their signed download links (`content_src` and its thumbnails, with `expires_at`): each is about 2,000 characters and FreeAgent issues it for only 30 seconds.
 - **Safe defaults.** Write tools are annotated, prompts wait for agreement, and the whole service can be made read-only.

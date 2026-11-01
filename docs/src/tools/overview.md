@@ -46,7 +46,7 @@ List tools take `page` (1 to 10000, default 1) and `per_page` (1 to 100, default
 {"count": 25, "total": 140, "page": 1, "next_page": 2, "items": [...]}
 ```
 
-`next_page` is present only when there is a next page; pass it as `page` for more. Answers are compact: FreeAgent's envelopes are unwrapped, and empty values (nulls, empty strings, empty lists) are dropped. `false` and `0` are kept.
+`next_page` is present only when there is a next page; pass it as `page` for more. Answers are compact: FreeAgent's envelopes are unwrapped, and empty values (nulls, empty strings, empty lists) are dropped. `false` and `0` are kept. Attachments, such as an expense's receipt, keep their id, file name, type, size and description, but not FreeAgent's signed download links, which expire 30 seconds after they are issued and would make a page of expenses with receipts too large for a tool result.
 
 ## Errors
 

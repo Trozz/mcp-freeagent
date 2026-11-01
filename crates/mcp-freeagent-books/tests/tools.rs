@@ -721,3 +721,53 @@ async fn upload_links_belong_to_whoever_made_them() {
         .unwrap();
     assert!(error_text(&theirs).starts_with("not_found:"));
 }
+
+#[tokio::test]
+async fn expense_lists_leave_out_receipt_download_links() {
+    // FreeAgent signs three ~2,000 character download links into every attachment, valid for
+    // 30 seconds. Fifty expenses with receipts came to over 200,000 characters, too much for a
+    // tool result.
+    let fake = FakeFreeAgent::start().await;
+    let link = format!(
+        "https://s3.example/receipt.jpg?X-Amz-Signature={}",
+        "a".repeat(2000)
+    );
+    let expense = |n: u32| {
+        json!({
+            "url": fake.res(&format!("expenses/{n}")),
+            "description": "Breakfast",
+            "gross_value": "-4.5",
+            "attachment": {
+                "url": fake.res(&format!("attachments/{n}")),
+                "content_src": link,
+                "content_src_medium": link,
+                "content_src_small": link,
+                "content_type": "image/jpeg",
+                "expires_at": "2026-11-01T20:29:40.000Z",
+                "file_name": "receipt.jpg",
+                "file_size": 531406
+            }
+        })
+    };
+    let expenses: Vec<Value> = (1..=50).map(expense).collect();
+    fake.on("GET", "expenses", Canned::ok(json!({"expenses": expenses})));
+    let s = server(&fake);
+    let r = s
+        .list_expenses(params(json!({"per_page": 50})), auth())
+        .await
+        .unwrap();
+    let t = text(&r);
+    assert!(!t.contains("X-Amz"), "signed links left in the result");
+    assert!(
+        t.len() < 40_000,
+        "50 expenses came to {} characters",
+        t.len()
+    );
+    let v = json(&r);
+    assert_eq!(v["count"], 50);
+    let a = &v["items"][0]["attachment"];
+    assert_eq!(a["id"], "1");
+    assert_eq!(a["file_name"], "receipt.jpg");
+    assert_eq!(a["content_type"], "image/jpeg");
+    assert!(a.get("content_src").is_none() && a.get("expires_at").is_none());
+}

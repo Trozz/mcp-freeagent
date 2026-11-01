@@ -50,6 +50,34 @@ fn add_ids(v: &mut Value) {
     }
 }
 
+/// The fields of a FreeAgent attachment that hold signed download links, and when they expire.
+/// Each link is about 2,000 characters and FreeAgent issues it for 30 seconds, so in a tool
+/// result it only costs space: a page of 50 expenses with receipts came to over 200,000
+/// characters, most of it these links.
+const SIGNED_LINKS: [&str; 4] = [
+    "content_src",
+    "content_src_medium",
+    "content_src_small",
+    "expires_at",
+];
+
+/// Removes the signed download links from every attachment in `v`, recursively. The file name,
+/// type, size, description and id stay.
+pub fn drop_signed_links(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            if map.contains_key("content_src") {
+                for k in SIGNED_LINKS {
+                    map.remove(k);
+                }
+            }
+            map.values_mut().for_each(drop_signed_links);
+        }
+        Value::Array(items) => items.iter_mut().for_each(drop_signed_links),
+        _ => {}
+    }
+}
+
 /// One resource for output: ids added, empty values dropped.
 pub fn resource(v: &Value) -> Value {
     let mut v = v.clone();
@@ -169,6 +197,39 @@ mod tests {
         assert_eq!(r["paid_value"], "0.0");
         assert_eq!(r["is_interim"], false);
         assert!(r.get("comments").is_none() && r.get("nothing").is_none());
+    }
+
+    #[test]
+    fn signed_attachment_links_are_dropped() {
+        let mut v = json!({
+            "items": [{
+                "url": "https://api.freeagent.com/v2/expenses/1",
+                "expires_at": "2026-12-01",
+                "attachment": {
+                    "url": "https://api.freeagent.com/v2/attachments/9",
+                    "content_src": "https://s3.example/a.jpg?X-Amz-Signature=x",
+                    "content_src_medium": "https://thumbs.example/m",
+                    "content_src_small": "https://thumbs.example/s",
+                    "content_type": "image/jpeg",
+                    "expires_at": "2026-11-01T20:29:40.000Z",
+                    "file_name": "receipt.jpg",
+                    "file_size": 531406
+                }
+            }]
+        });
+        drop_signed_links(&mut v);
+        let a = &v["items"][0]["attachment"];
+        assert_eq!(
+            a,
+            &json!({
+                "url": "https://api.freeagent.com/v2/attachments/9",
+                "content_type": "image/jpeg",
+                "file_name": "receipt.jpg",
+                "file_size": 531406
+            })
+        );
+        // Only attachments lose `expires_at`.
+        assert_eq!(v["items"][0]["expires_at"], "2026-12-01");
     }
 
     #[test]
