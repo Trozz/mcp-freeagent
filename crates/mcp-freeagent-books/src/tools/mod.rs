@@ -298,10 +298,11 @@ impl ServerHandler for BooksServer {
 /// Query parameters of a FreeAgent request.
 pub(crate) type Query = Vec<(&'static str, String)>;
 
-/// The most characters a page of a list may come to. Clients cut or refuse longer tool results
-/// (Claude Code's default limit is 25,000 tokens, about 80,000 characters of JSON), and a model
-/// cannot recover from that the way it can from a clear error.
-pub const MAX_RESULT_CHARS: usize = 80_000;
+/// The most characters a page of a list may come to. Clients cut or refuse longer tool results,
+/// and a model cannot recover from that the way it can from a clear error. Claude Code's default
+/// limit is 25,000 tokens; compact JSON of FreeAgent records runs at about 2.9 characters a token,
+/// so a 72,000-character page of bank transactions went over it.
+pub const MAX_RESULT_CHARS: usize = 50_000;
 
 /// A tool result: `v` as compact JSON, without what [`view::for_output`] leaves out. A page of a
 /// list (`items` with more than one item) longer than [`MAX_RESULT_CHARS`] becomes an error that
