@@ -4,7 +4,7 @@ A self-hosted [Model Context Protocol](https://modelcontextprotocol.io) server f
 
 | Endpoint | What it does |
 |---|---|
-| `/freeagent` | 86 tools and 14 prompts for the books of the company whose FreeAgent user signed in |
+| `/freeagent` | 91 tools and 18 prompts for the books of the company whose FreeAgent user signed in |
 | `/mcp` | Every enabled service's tools and prompts in one connector, named `<service>_<tool>`, for example `freeagent_list_invoices` |
 
 - **People sign in with FreeAgent itself.** The sign-in page asks the person to approve the MCP client, sends them to FreeAgent to log in and approve this server's app, and keeps the refresh token FreeAgent grants only in encrypted form inside their own tokens. There are no API keys, and the server stores no credential (see [Tokens](#tokens) for the one optional file). Every call acts as that FreeAgent user, within their access level.
@@ -89,6 +89,7 @@ FreeAgent documents HTTP Basic authentication for the app's credentials. If it r
 | Banking | `list_bank_accounts`, `get_bank_account`, `list_bank_transactions`, `get_bank_transaction`, `list_bank_transaction_explanations`, `explain_bank_transaction` (a category, invoice, bill, transfer or user payment), `update_bank_transaction_explanation`, `delete_bank_transaction_explanation`, `approve_explanations` (FreeAgent's guesses), `upload_bank_statement`, `list_bank_feeds` |
 | Accounting | `list_categories` (find a nominal code by words), `get_profit_and_loss`, `get_balance_sheet`, `get_trial_balance`, `get_cashflow`, `list_accounting_transactions`, `list_journal_sets`, `create_journal_set` (must balance), `list_tax_returns`, `get_tax_return`, `mark_tax_return`, `get_payroll` |
 | Reviews | `month_end_check` (what to finish before a month end or VAT return: unexplained transactions, missing receipts, drafts, overdue items, suspense, overdrawn directors' loans), `director_loan_review` (each director's loan account, the s455 deadline and estimated tax, benefit in kind) |
+| Planning | `tax_set_aside` (corporation tax on this year's profit so far, with VAT, PAYE and tax already owed, against the cash in the bank), `dividend_check` (profits available after corporation tax, cash after tax, each shareholder's part and its effect on their loan account), `draft_dividend_paperwork` (board minute and dividend vouchers), `accountant_pack` (a year end for the accountant with questions to ask), `compare_periods` (profit and loss against the same period a year earlier) |
 | Attachments | `create_upload_link` (a single-use link for the person to send a receipt or invoice, held for the model to read or attached straight to an expense, bill or bank explanation), `get_upload_status`, `get_uploaded_file` (read what was sent: photos as images, PDFs as files), `get_attachment` (read a file already in FreeAgent), `attach_file` (a sent file, or base64 for files the client can read itself) |
 | Anything else | `api_get` (read-only) and `api_request` (POST, PUT, DELETE) on any FreeAgent API path |
 
@@ -118,6 +119,10 @@ Good to know:
 | `tax_deadlines` | Upcoming and overdue tax and filing deadlines, most urgent first. |
 | `month_end_close` | Checks a month is ready to close: bank, drafts, suspense account, trial balance. |
 | `director_loan_review` | Each director's loan account, what makes it up, the s455 position and ways to clear it. |
+| `tax_set_aside` | How much to keep back for corporation tax, VAT and PAYE against the cash in the bank. |
+| `dividend` | Checks a dividend fits the profits and cash, drafts the board minute and vouchers, and records it once you agree. |
+| `accountant_pack` | A year-end pack for your accountant with a numbered list of questions. |
+| `year_on_year` | Profit and loss against the same period a year earlier, with what moved most and why. |
 | `cashflow_review` | Cash in and out by month, money due each way, and runway. |
 
 On `/mcp` they are named `freeagent_<prompt>`, and the tools in their text carry the same prefix.

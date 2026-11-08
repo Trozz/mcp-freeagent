@@ -675,6 +675,11 @@ fn every_tool_has_a_description_and_the_right_hints() {
             "api_get",
             "month_end_check",
             "director_loan_review",
+            "tax_set_aside",
+            "dividend_check",
+            "draft_dividend_paperwork",
+            "accountant_pack",
+            "compare_periods",
         ]
         .iter()
         .any(|p| name.starts_with(p));
@@ -844,6 +849,347 @@ async fn expense_lists_leave_out_receipt_download_links() {
     assert_eq!(a["file_name"], "receipt.jpg");
     assert_eq!(a["content_type"], "image/jpeg");
     assert!(a.get("content_src").is_none() && a.get("expires_at").is_none());
+}
+
+/// A company with years to September, VAT registered, for the planning tools.
+fn planning_books(fake: &FakeFreeAgent) {
+    fake.on(
+        "GET",
+        "company",
+        Canned::ok(json!({"company": {
+            "url": fake.res("company"), "name": "Lee Consulting Ltd", "company_registration_number": "01234567",
+            "address1": "1 High Street", "town": "Leeds", "postcode": "LS1 1AA",
+            "sales_tax_registration_status": "Registered",
+            "annual_accounting_periods": [
+                {"starts_on": "2025-10-01", "ends_on": "2026-09-30"},
+                {"starts_on": "2026-10-01", "ends_on": "2027-09-30"}
+            ]
+        }})),
+    );
+    fake.on(
+        "GET",
+        "accounting/balance_sheet",
+        Canned::ok(json!({"balance_sheet": {
+            "current_assets": {"accounts": [
+                {"name": "Director Loan Account: Ann Lee", "nominal_code": "907-1", "total_debit_value": 1779}
+            ]},
+            "current_liabilities": {"accounts": [
+                {"name": "Corporation Tax", "nominal_code": "820", "total_debit_value": -3000},
+                {"name": "VAT", "nominal_code": "817", "total_debit_value": -2500},
+                {"name": "PAYE/NI", "nominal_code": "814", "total_debit_value": -400}
+            ]}
+        }})),
+    );
+    fake.on(
+        "GET",
+        "bank_accounts",
+        Canned::ok(json!({"bank_accounts": [
+            {"url": fake.res("bank_accounts/1"), "name": "Main", "current_balance": "60000.00", "unexplained_transaction_count": 3},
+            {"url": fake.res("bank_accounts/2"), "name": "Old", "status": "hidden", "current_balance": "999.00"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "vat_returns",
+        Canned::ok(json!({"vat_returns": [
+            {"period_starts_on": "2027-01-01", "period_ends_on": "2027-03-31", "filing_due_on": "2027-05-07", "filing_status": "unfiled"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "accounting/profit_and_loss/summary",
+        Canned::ok(json!({"profit_and_loss_summary": {
+            "income": "90000.0", "expenses": "50000.0", "operating_profit": "40000.0", "less": [],
+            "retained_profit": "40000.0", "retained_profit_brought_forward": "-10000.0",
+            "retained_profit_carried_forward": "30000.0"
+        }})),
+    );
+}
+
+#[tokio::test]
+async fn tax_to_keep_back_covers_this_years_corporation_tax_and_what_is_owed() {
+    let fake = FakeFreeAgent::start().await;
+    planning_books(&fake);
+    let s = server(&fake);
+    let v = json(
+        &s.tax_set_aside(params(json!({"as_at_date": "2027-03-31"})), auth())
+            .await
+            .unwrap(),
+    );
+    let pl = fake.last("GET", "accounting/profit_and_loss/summary");
+    assert_eq!(pl.param("from_date"), Some("2026-10-01"));
+    assert_eq!(pl.param("to_date"), Some("2027-03-31"));
+    assert_eq!(v["profit_to_date"], "40000.00");
+    assert_eq!(
+        v["corporation_tax"]["estimate_on_profit_to_date"],
+        "7600.00"
+    );
+    assert_eq!(
+        v["corporation_tax"]["worked_out_as"],
+        "small profits rate, 19%"
+    );
+    assert_eq!(v["accounting_year"]["days_gone"], 182);
+    assert_eq!(v["vat"]["owed_on_balance_sheet"], "2500.00");
+    assert_eq!(v["vat"]["next_return"]["filing_due_on"], "2027-05-07");
+    assert_eq!(
+        v["keep_back"],
+        json!({"corporation_tax_this_year": "7600.00", "corporation_tax_owed": "3000.00", "vat": "2500.00", "paye_and_ni": "400.00", "total": "13500.00"})
+    );
+    assert_eq!(
+        v["bank_balances"]["total"], "60000.00",
+        "hidden accounts are left out"
+    );
+    assert_eq!(v["left_after_keeping_back"], "46500.00");
+    let r = s
+        .tax_set_aside(params(json!({"associated_companies": 101})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).starts_with("validation: "));
+}
+
+#[tokio::test]
+async fn a_dividend_over_the_profits_available_is_flagged_and_split_by_shares() {
+    let fake = FakeFreeAgent::start().await;
+    planning_books(&fake);
+    let s = server(&fake);
+    let v = json(
+        &s.dividend_check(
+            params(json!({
+                "amount": "25000",
+                "as_at_date": "2027-03-31",
+                "shareholders": [{"name": "Ann Lee", "shares": 50}, {"name": "Bob Hay", "shares": 50}]
+            })),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    // 30,000 retained less 7,600 of corporation tax not yet booked.
+    assert_eq!(v["profits"]["available_for_dividends"], "22400.00");
+    assert_eq!(v["cash"]["available"], "46500.00");
+    assert_eq!(v["most_that_could_be_paid"], "22400.00");
+    assert_eq!(v["ok"], false);
+    let flags = v["flags"].to_string();
+    assert!(flags.contains("unlawful"), "{flags}");
+    let ann = &v["shareholders"][0];
+    assert_eq!(ann["dividend"], "12500.00");
+    assert_eq!(ann["loan_account_now"], "1779.00");
+    assert_eq!(ann["loan_account_if_credited"], "-10721.00");
+    assert_eq!(ann["s455"]["repay_by"], "2027-06-30");
+    assert!(flags.contains("by 2027-06-30"), "{flags}");
+    assert!(v["shareholders"][1].get("loan_account_now").is_none());
+
+    let v = json(
+        &s.dividend_check(params(json!({"as_at_date": "2027-03-31"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["most_that_could_be_paid"], "22400.00");
+    assert_eq!(
+        v["shareholders"]["directors_in_the_books"],
+        json!(["Ann Lee"])
+    );
+}
+
+#[tokio::test]
+async fn dividend_paperwork_adds_up_to_the_total_and_names_the_company() {
+    let fake = FakeFreeAgent::start().await;
+    planning_books(&fake);
+    let s = server(&fake);
+    let v = json(
+        &s.draft_dividend_paperwork(
+            params(json!({
+                "declared_on": "2027-03-31",
+                "total": "1000",
+                "shareholders": [{"name": "Ann Lee", "shares": 1}, {"name": "Bob Hay", "shares": 2}],
+                "directors_present": ["Ann Lee"]
+            })),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["total"], "1000.00");
+    assert_eq!(v["vouchers"][0]["amount"], "333.33");
+    assert_eq!(v["vouchers"][1]["amount"], "666.67");
+    let minute = v["board_minute"].as_str().unwrap();
+    assert!(minute.contains("Company number 01234567"), "{minute}");
+    assert!(minute.contains("1 High Street, Leeds, LS1 1AA"), "{minute}");
+    assert!(
+        minute.contains("interim dividend of £333.3333 per Ordinary share"),
+        "{minute}"
+    );
+    assert!(minute.contains("Present: Ann Lee"), "{minute}");
+    let voucher = v["vouchers"][1]["text"].as_str().unwrap();
+    assert!(
+        voucher.contains("Shareholder: Bob Hay") && voucher.contains("Amount paid: £666.67"),
+        "{voucher}"
+    );
+
+    let v = json(
+        &s.draft_dividend_paperwork(
+            params(json!({
+                "declared_on": "2027-03-31",
+                "per_share": "2.5",
+                "kind": "final",
+                "shareholders": [{"name": "Ann Lee", "shares": 100}]
+            })),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["total"], "250.00");
+    assert!(
+        v["board_minute"]
+            .as_str()
+            .unwrap()
+            .contains("recommend to the shareholders a final dividend of £2.50")
+    );
+    for bad in [
+        json!({"declared_on": "2027-03-31", "total": "10", "per_share": "1", "shareholders": [{"name": "A", "shares": 1}]}),
+        json!({"declared_on": "2027-03-31", "total": "10", "shareholders": []}),
+        json!({"declared_on": "2027-03-31", "total": "10", "shareholders": [{"name": "A", "shares": 0}]}),
+    ] {
+        let r = s
+            .draft_dividend_paperwork(params(bad), auth())
+            .await
+            .unwrap();
+        assert!(error_text(&r).starts_with("validation: "));
+    }
+}
+
+#[tokio::test]
+async fn the_accountant_pack_raises_questions_about_odd_balances_and_journals() {
+    let fake = FakeFreeAgent::start().await;
+    planning_books(&fake);
+    fake.on(
+        "GET",
+        "accounting/trial_balance/summary",
+        Canned::ok(json!({"trial_balance_summary": [
+            {"nominal_code": "001", "display_nominal_code": "001", "name": "Sales", "total": "-90000.0"},
+            {"nominal_code": "285", "display_nominal_code": "285", "name": "Travel", "total": "-50.0"},
+            {"nominal_code": "363", "display_nominal_code": "363", "name": "Bank Charges", "total": "6738.73"},
+            {"nominal_code": "999", "display_nominal_code": "999", "name": "Suspense", "total": "12.50"},
+            {"nominal_code": "250", "display_nominal_code": "250", "name": "Accountancy", "total": "0.0"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "journal_sets",
+        Canned::ok(json!({"journal_sets": [
+            {"url": fake.res("journal_sets/4"), "dated_on": "2026-03-31", "description": "Sale of Car", "journal_entries": [
+                {"debit_value": "10000.0"}, {"debit_value": "-10000.0"}
+            ]}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "expenses",
+        Canned::ok(json!({"expenses": [
+            {"url": fake.res("expenses/1"), "dated_on": "2026-05-01", "gross_value": "-12.00", "sales_tax_value": "-2.00"}
+        ]})),
+    );
+    fake.on("GET", "bills", Canned::ok(json!({"bills": []})));
+    let s = server(&fake);
+    let v = json(
+        &s.accountant_pack(params(json!({"year_end": "2026-09-30"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        v["year"],
+        json!({"from": "2025-10-01", "to": "2026-09-30", "ended": true})
+    );
+    let tb = fake.last("GET", "accounting/trial_balance/summary");
+    assert_eq!(tb.param("from_date"), Some("2025-10-01"));
+    assert_eq!(
+        v["trial_balance"]["rows"].as_array().unwrap().len(),
+        4,
+        "zero rows are left out"
+    );
+    assert_eq!(v["trial_balance"]["suspense"], "12.50");
+    assert_eq!(v["journals"]["count"], 1);
+    assert_eq!(v["journals"]["items"][0]["debits"], "10000.00");
+    assert_eq!(v["open_items"]["unexplained_bank_transactions_now"], 3);
+    assert_eq!(v["open_items"]["expenses_without_receipts"]["count"], 1);
+    assert!(
+        v["directors_loans"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty())
+    );
+    let q = v["questions_for_accountant"].to_string();
+    for want in [
+        "Suspense",
+        "285 Travel has a credit balance",
+        "Bank charges come to 6738.73",
+        "Sale of Car",
+        "Corporation tax for the year",
+        "no receipt",
+    ] {
+        assert!(q.contains(want), "{want}: {q}");
+    }
+    let r = s
+        .accountant_pack(params(json!({"year_end": "2026-08-31"})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).contains("2026-09-30"));
+}
+
+#[tokio::test]
+async fn compare_periods_sets_each_category_against_a_year_earlier() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on_seq(
+        "GET",
+        "accounting/trial_balance/summary",
+        vec![
+            Canned::ok(json!({"trial_balance_summary": [
+                {"nominal_code": "001", "display_nominal_code": "001", "name": "Sales", "total": "-1000.0"},
+                {"nominal_code": "285", "display_nominal_code": "285", "name": "Travel", "total": "200.0"},
+                {"nominal_code": "750-1", "display_nominal_code": "750-1", "name": "Bank", "total": "999.0"}
+            ]})),
+            Canned::ok(json!({"trial_balance_summary": [
+                {"nominal_code": "001", "display_nominal_code": "001", "name": "Sales", "total": "-800.0"},
+                {"nominal_code": "285", "display_nominal_code": "285", "name": "Travel", "total": "300.0"},
+                {"nominal_code": "363", "display_nominal_code": "363", "name": "Bank Charges", "total": "50.0"}
+            ]})),
+        ],
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.compare_periods(
+            params(json!({"from_date": "2026-10-01", "to_date": "2027-03-31"})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["last"], json!({"from": "2025-10-01", "to": "2026-03-31"}));
+    let l = fake.last("GET", "accounting/trial_balance/summary");
+    assert_eq!(l.param("from_date"), Some("2025-10-01"));
+    assert_eq!(
+        v["totals"]["income"],
+        json!({"this": "1000.00", "last": "800.00", "change": "200.00", "change_percent": "25.0"})
+    );
+    assert_eq!(v["totals"]["expenses"]["last"], "350.00");
+    assert_eq!(v["totals"]["profit"]["change"], "350.00");
+    assert_eq!(v["totals"]["profit"]["change_percent"], "77.7");
+    let movers: Vec<&str> = v["biggest_changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        movers,
+        ["Sales", "Travel", "Bank Charges"],
+        "balance sheet codes are left out"
+    );
+    let r = s
+        .compare_periods(params(json!({"compare_from_date": "2025-01-01"})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).starts_with("validation: "));
 }
 
 #[tokio::test]

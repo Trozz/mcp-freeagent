@@ -38,6 +38,10 @@ Each prompt is a command named after it, with `-` for `_`:
 | `/freeagent:tax-deadlines [months]` | `tax_deadlines` |
 | `/freeagent:month-end-close [month]` | `month_end_close` |
 | `/freeagent:director-loan-review [as_at]` | `director_loan_review` |
+| `/freeagent:tax-set-aside [as_at]` | `tax_set_aside` |
+| `/freeagent:dividend [amount] [shareholders]` | `dividend` |
+| `/freeagent:accountant-pack [year_end]` | `accountant_pack` |
+| `/freeagent:year-on-year [period]` | `year_on_year` |
 | `/freeagent:cashflow-review [months]` | `cashflow_review` |
 
 Type the arguments in plain words after the command, for example `/freeagent:explain-transactions September 2026` or `/freeagent:log-time 3h on the Acme website yesterday`. The command reads each argument from what you typed and asks for a required one that is missing. Commands behave as the prompts do: nothing changes in FreeAgent until you agree.

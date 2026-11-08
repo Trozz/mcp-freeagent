@@ -210,6 +210,57 @@ pub const PROMPTS: &[PromptSpec] = &[
         render: director_loan_review,
     },
     PromptSpec {
+        name: "tax_set_aside",
+        title: "How much tax to keep back",
+        description: "How much to keep back for tax now: corporation tax on this year's profit so far, and if the profit continues, plus VAT, PAYE and corporation tax already owed, against the cash in the bank.",
+        arguments: &[arg(
+            "as_at",
+            "The date to work to, YYYY-MM-DD. Default: today.",
+            false,
+        )],
+        render: tax_set_aside,
+    },
+    PromptSpec {
+        name: "dividend",
+        title: "Pay a dividend",
+        description: "Check whether a dividend fits the profits available and the cash after tax, split it between shareholders with the effect on directors' loan accounts, draft the board minute and vouchers, and record it once you agree.",
+        arguments: &[
+            arg(
+                "amount",
+                "The dividend in total, e.g. 5000. Default: show the most that could be paid.",
+                false,
+            ),
+            arg(
+                "shareholders",
+                "Who holds the shares, e.g. \"Ann Lee 50, Bob Hay 50\". FreeAgent keeps no share register.",
+                false,
+            ),
+        ],
+        render: dividend,
+    },
+    PromptSpec {
+        name: "accountant_pack",
+        title: "Year-end pack for the accountant",
+        description: "Gather an accounting year for your accountant: the profit and loss, balance sheet, trial balance, directors' loan accounts, journals and open items, with a list of questions to send them.",
+        arguments: &[arg(
+            "year_end",
+            "The accounting year's end date, YYYY-MM-DD. Default: the last year that has ended.",
+            false,
+        )],
+        render: accountant_pack,
+    },
+    PromptSpec {
+        name: "year_on_year",
+        title: "This year against last",
+        description: "Compare profit and loss with the same period a year earlier: income, costs and profit, the categories that moved most, and what may explain them.",
+        arguments: &[arg(
+            "period",
+            "The period, e.g. 2026-04-01 to 2026-09-30. Default: this accounting year to date.",
+            false,
+        )],
+        render: year_on_year,
+    },
+    PromptSpec {
         name: "cashflow_review",
         title: "Cash flow review",
         description: "Review cash flow: money in and out by month, what customers owe and when, bills and tax coming up, and how long the cash will last at the current rate.",
@@ -421,6 +472,61 @@ fn director_loan_review(p: &str, a: &Args) -> String {
 Change nothing. Offer a journal setting expenses owed against the loan only as a proposal, with its entries, for me to agree first. Suggest checking tax points with my accountant.\n\n{}",
         a.get("as_at"),
         footer(true)
+    )
+}
+
+fn tax_set_aside(p: &str, a: &Args) -> String {
+    format!(
+        "Tell me how much to keep back for tax, from FreeAgent.\n\n\
+<as_at>{}</as_at>\n\n\
+1. `{p}tax_set_aside`, with as_at_date if a date is given above. If I have said the company has associated companies (others under the same control), pass associated_companies.\n\
+2. Write: the total to keep back in one line, then a table of each part (corporation tax this year, corporation tax already owed, VAT, PAYE and NI) with its due date where known (`{p}get_tax_timeline`), the cash in the bank and what is left after keeping it back. Give the full-year corporation tax if the profit continues, and the rate band it falls in.\n\
+3. Say plainly that these are estimates: corporation tax is worked out on the profit in the books, with no adjustment for disallowed costs, capital allowances or losses. If what is left is negative or small, say so first.\n\n\
+Change nothing.\n\n{}",
+        a.get("as_at"),
+        footer(false)
+    )
+}
+
+fn dividend(p: &str, a: &Args) -> String {
+    format!(
+        "Help me decide on and pay a dividend, from FreeAgent.\n\n\
+<amount>{}</amount>\n\
+<shareholders>{}</shareholders>\n\n\
+If no shareholders are given above, ask me who holds the shares and how many each, as FreeAgent keeps no share register.\n\n\
+1. `{p}dividend_check` with the amount if given and the shareholders. Give the profits available, the cash after keeping back tax, the most that could be paid, each shareholder's part and what it does to their director's loan account. If the amount is over the profits available, say clearly that it would be unlawful and stop there unless I lower it. If a director's loan account is overdrawn, say that a dividend credited to it could clear it, and by when for s455.\n\
+2. If I go ahead, ask for the declaration and payment dates and the directors at the meeting, then `{p}draft_dividend_paperwork` and show me the board minute and each voucher to check and sign.\n\
+3. Then offer to record it, showing exactly what you will do first. A dividend paid from the bank: find the payment with `{p}list_bank_transactions` and explain it with `{p}explain_bank_transaction`, using the Dividend category from `{p}list_categories` and the shareholder as the user it was paid to. A dividend credited to a director's loan account instead: a journal with `{p}create_journal_set` debiting the dividend category and crediting their loan account (907-n).\n\n\
+Suggest checking the amount and the shareholders' personal tax on it with my accountant.\n\n{}",
+        a.get("amount"),
+        a.get("shareholders"),
+        footer(true)
+    )
+}
+
+fn accountant_pack(p: &str, a: &Args) -> String {
+    format!(
+        "Put together a year-end pack for my accountant from FreeAgent.\n\n\
+<year_end>{}</year_end>\n\n\
+1. `{p}accountant_pack`, with year_end if a date is given above.\n\
+2. For each question it raises about a balance or journal, look a little further where it helps: `{p}list_accounting_transactions` for the nominal code over the year shows what makes it up. Keep each to a line or two.\n\
+3. Write the pack: the year and company; profit for the year; the balance sheet in brief; each director's loan account and s455 position; open items still to finish (and offer to finish them before sending); then Questions for the accountant, numbered, each with the figures and ids it is about. End with a short covering note I can send with it.\n\n\
+Change nothing.\n\n{}",
+        a.get("year_end"),
+        footer(false)
+    )
+}
+
+fn year_on_year(p: &str, a: &Args) -> String {
+    format!(
+        "Compare my profit and loss with a year earlier, from FreeAgent.\n\n\
+<period>{}</period>\n\n\
+1. `{p}compare_periods`, with from_date and to_date for the period above if given; otherwise this accounting year to date.\n\
+2. For the two or three categories that changed most, look at what is behind them with `{p}list_accounting_transactions` for that nominal code in both periods, and say what changed (a new supplier, a one-off cost, a customer lost).\n\
+3. Write: income, costs and profit this period and last in a small table with the change; then the biggest movers, each with a line on why; then anything that looks like a misposting rather than a real change.\n\n\
+Change nothing.\n\n{}",
+        a.get("period"),
+        footer(false)
     )
 }
 
