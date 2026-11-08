@@ -47,6 +47,7 @@ Each item of a bill's `items`:
 | `create_mileage_claim` | write | Claim business mileage at HMRC's approved rates. FreeAgent works out the amount | `dated_on`, `description`, `mileage`, and the fields below |
 | `update_expense` | write | Change only the fields given. `amount` is what was spent, positive | `id`, expense fields |
 | `delete_expense` | write, destructive | Delete an expense | `id` |
+| `mileage_tracker` | read | Business mileage claimed in a UK tax year (6 April to 5 April), per person and vehicle: miles, amount claimed and HMRC's approved amount (car or van 45p a mile for the first 10,000 business miles and 25p after, motorcycle 24p, bicycle 20p); for cars, miles at each rate and miles left at 45p; flags for passing the threshold and claims above the approved rate, which are taxable | `tax_year` (such as `2026/27`; default the current one), `user_id` |
 
 ### Expense fields
 

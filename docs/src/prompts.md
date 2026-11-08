@@ -1,6 +1,6 @@
 # Prompts
 
-Prompts are ready-made requests a client can offer you, often as slash commands. They tell the model which tools to call and in what order; they change nothing by themselves. The [Claude Code plugin](claude-code-plugin.md) offers the same 14 as `/freeagent:...` commands.
+Prompts are ready-made requests a client can offer you, often as slash commands. They tell the model which tools to call and in what order; they change nothing by themselves. The [Claude Code plugin](claude-code-plugin.md) offers the same 15 as `/freeagent:...` commands.
 
 | Prompt | Arguments | What it does |
 |---|---|---|
@@ -8,7 +8,8 @@ Prompts are ready-made requests a client can offer you, often as slash commands.
 | `monthly_bookkeeping` | `month` (default last month) | Goes through one month: unexplained and unapproved bank transactions, draft and overdue invoices, unbilled time, unpaid bills and expenses, with a checklist of what to do and offers to fix each item |
 | `explain_transactions` | `bank_account` (default every account), `period` (default everything unexplained) | Suggests what each unexplained bank transaction was (the invoice it pays, a bill, a transfer, a director's payment, or a category with VAT), says how sure it is, and explains them after you approve |
 | `approve_guesses` | `bank_account` (default every account) | Reviews the explanations FreeAgent guessed and marked for review, flags any that look wrong, and approves the rest once you agree |
-| `chase_overdue` | `tone` (`friendly`, `firm` or `final`; default friendly under 30 days overdue, firm after), `customer` | Lists overdue invoices by customer, oldest and largest first, drafts a reminder for each customer, sends the ones you approve through FreeAgent, and notes each chase on the contact |
+| `chase_overdue` | `tone` (`friendly`, `firm` or `final`; default the plan's stage: friendly up to 7 days overdue, firm up to 30, final after), `customer` | Lists overdue invoices by customer with `overdue_chase_plan`, longest overdue first, adjusts its drafted reminder for each customer, sends the ones you approve through FreeAgent, and notes each chase on the contact |
+| `mileage_check` | `tax_year` (default the current one) | Mileage claimed in the tax year per person against HMRC's approved rates: miles left at 45p before the 10,000-mile threshold, and any claims paid above the approved rate with the correction to make. It changes nothing until you agree |
 | `create_invoice` | `request` (required) | Raises an invoice from a plain description, such as "Acme, 3 days consulting at £600 a day, plus £45 train fare": finds the customer, drafts the lines with VAT, and creates and sends it after you approve |
 | `invoice_unbilled_time` | `client` (default every client with unbilled time) | Finds unbilled time and rebillable expenses for a client or project and turns them into a draft invoice after you approve |
 | `log_time` | `work` (required) | Logs time from a plain description, such as "3h on the Acme website yesterday, 1.5h client call today": matches projects and tasks and creates the timeslips after you approve |

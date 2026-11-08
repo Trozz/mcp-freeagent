@@ -4,7 +4,7 @@ A self-hosted [Model Context Protocol](https://modelcontextprotocol.io) server f
 
 | Endpoint | What it does |
 |---|---|
-| `/freeagent` | 86 tools and 14 prompts for the books of the company whose FreeAgent user signed in |
+| `/freeagent` | 93 tools and 15 prompts for the books of the company whose FreeAgent user signed in |
 | `/mcp` | Every enabled service's tools and prompts in one connector, named `<service>_<tool>`, for example `freeagent_list_invoices` |
 
 - **People sign in with FreeAgent itself.** The sign-in page asks the person to approve the MCP client, sends them to FreeAgent to log in and approve this server's app, and keeps the refresh token FreeAgent grants only in encrypted form inside their own tokens. There are no API keys, and the server stores no credential (see [Tokens](#tokens) for the one optional file). Every call acts as that FreeAgent user, within their access level.
@@ -84,8 +84,9 @@ FreeAgent documents HTTP Basic authentication for the app's credentials. If it r
 | Company | `get_company`, `get_current_user`, `list_users`, `get_tax_timeline`, `business_snapshot` (balances, money owed each way, unexplained transactions, explanations to approve and deadlines in one call) |
 | Contacts | `search_contacts` (by name or email), `get_contact`, `create_contact`, `update_contact`, `delete_contact`, `list_notes`, `create_note` |
 | Projects and time | `list_projects`, `get_project`, `create_project`, `update_project`, `list_tasks`, `create_task`, `update_task`, `list_timeslips`, `log_time`, `update_timeslip`, `delete_timeslip`, `start_timer`, `stop_timer` |
-| Sales | `list_invoices`, `get_invoice`, `create_invoice` (from lines, or a project's unbilled time and expenses), `update_invoice`, `delete_invoice` (drafts only), `invoice_action` (mark sent, draft, scheduled, cancelled; convert to credit note; duplicate), `list_estimates`, `get_estimate`, `create_estimate`, `estimate_action`, `list_credit_notes`, `get_credit_note`, `create_credit_note`, `list_recurring_invoices`, `send_document_email`, `get_document_pdf`, `list_price_list_items`, `list_email_addresses` |
-| Purchases | `list_bills`, `get_bill`, `create_bill`, `update_bill`, `delete_bill`, `list_expenses`, `get_expense`, `create_expense`, `create_mileage_claim`, `update_expense`, `delete_expense` |
+| Sales | `list_invoices`, `get_invoice`, `create_invoice` (from lines, or a project's unbilled time and expenses), `update_invoice`, `delete_invoice` (drafts only), `invoice_action` (mark sent, draft, scheduled, cancelled; convert to credit note; duplicate), `list_estimates`, `get_estimate`, `create_estimate`, `estimate_action`, `list_credit_notes`, `get_credit_note`, `create_credit_note`, `list_recurring_invoices`, `get_recurring_invoice` (FreeAgent's API only reads recurring invoices), `overdue_chase_plan` (overdue invoices by customer with a reminder stage and a drafted email), `send_document_email`, `get_document_pdf`, `list_price_list_items`, `list_email_addresses` |
+| Purchases | `list_bills`, `get_bill`, `create_bill`, `update_bill`, `delete_bill`, `list_expenses`, `get_expense`, `create_expense`, `create_mileage_claim`, `update_expense`, `delete_expense`, `mileage_tracker` (business miles in the tax year against HMRC's 45p/25p rates and the 10,000-mile threshold) |
+| Fixed assets | `list_capital_assets`, `get_capital_asset` (with depreciation and capital allowance history), `list_capital_asset_types`, `asset_register_check` (purchases that look like equipment but were booked as everyday costs, and assets with no depreciation) |
 | Banking | `list_bank_accounts`, `get_bank_account`, `list_bank_transactions`, `get_bank_transaction`, `list_bank_transaction_explanations`, `explain_bank_transaction` (a category, invoice, bill, transfer or user payment), `update_bank_transaction_explanation`, `delete_bank_transaction_explanation`, `approve_explanations` (FreeAgent's guesses), `upload_bank_statement`, `list_bank_feeds` |
 | Accounting | `list_categories` (find a nominal code by words), `get_profit_and_loss`, `get_balance_sheet`, `get_trial_balance`, `get_cashflow`, `list_accounting_transactions`, `list_journal_sets`, `create_journal_set` (must balance), `list_tax_returns`, `get_tax_return`, `mark_tax_return`, `get_payroll` |
 | Reviews | `month_end_check` (what to finish before a month end or VAT return: unexplained transactions, missing receipts, drafts, overdue items, suspense, overdrawn directors' loans), `director_loan_review` (each director's loan account, the s455 deadline and estimated tax, benefit in kind) |
@@ -99,7 +100,7 @@ Good to know:
 - FreeAgent has no contact search, so `search_contacts` reads up to 3000 contacts and matches every word locally.
 - `mark_tax_return` only records that a return was filed or paid elsewhere; nothing is filed with HMRC.
 - Attachments: models cannot pass files shared in a chat to a tool, and requests to the MCP endpoints are limited to 1 MB. So `create_upload_link` gives the person a link, `PUBLIC_URL/upload/<token>`, to open on their phone or computer and pick a PDF, PNG, JPEG or GIF of up to 5 MB, which the server attaches in FreeAgent as them (`curl -F file=@receipt.pdf <link>` works too). Made without a target, the link holds the file instead (for 30 minutes, at most 100 MB across the server): the model reads it with `get_uploaded_file`, fills in the expense, bill or explanation, and attaches it with `attach_file` and the link. `get_attachment` reads a file already in FreeAgent, downloading it from FreeAgent's signed storage link with no FreeAgent token. A link works once, for 30 minutes, and lives in the server's memory, so a restart or another replica does not know it. Bank explanations get files through FreeAgent's newer attachments endpoint (`X-Api-Version: 2026-09-01`), since the single `attachment` field is withdrawn from 1 December 2026. `attach_file` and the `attachment` arguments still take base64 for small files.
-- FreeAgent allows 120 requests a minute and 3600 an hour per user. Tools say how long to wait when the limit is hit. Reads are retried once after a network or server error; writes never are. A refused access token is refreshed and the request sent once more.
+- FreeAgent allows 120 requests a minute and 3600 an hour per user. The server keeps each person under 110 a minute by holding back requests that would go over, and a read refused with a 429 asking to wait 10 seconds or less is sent again once; otherwise tools say how long to wait. Reads are retried once after a network or server error; writes never are. A refused access token is refreshed and the request sent once more. The category list is kept for 10 minutes per person.
 
 ## Prompts
 
@@ -109,7 +110,8 @@ Good to know:
 | `monthly_bookkeeping` | A month's checklist: transactions to explain, guesses to approve, drafts to send, overdue invoices, unbilled time, bills, missing receipts. |
 | `explain_transactions` | Suggests what each unexplained bank transaction was (invoice, bill, transfer, director, category with VAT) and explains them once you agree. |
 | `approve_guesses` | Reviews FreeAgent's guessed explanations, flags doubtful ones, approves the rest. |
-| `chase_overdue` | Drafts reminders for overdue invoices by customer, sends approved ones and notes each chase. |
+| `chase_overdue` | Drafts reminders for overdue invoices by customer from `overdue_chase_plan`, sends approved ones and notes each chase. |
+| `mileage_check` | Mileage claimed this tax year against HMRC's rates and the 10,000-mile threshold, with corrections for any overclaims. |
 | `create_invoice` | Raises an invoice from a plain description, then offers to send it. |
 | `invoice_unbilled_time` | Turns unbilled time and rebillable expenses into a draft invoice. |
 | `log_time` | Logs time from a description such as "3h on the Acme website yesterday". |

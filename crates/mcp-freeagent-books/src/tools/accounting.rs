@@ -222,6 +222,51 @@ impl BooksServer {
     }
 }
 
+impl BooksServer {
+    /// FreeAgent's category list, as it answers `GET categories`, from the cache when it was read
+    /// in the last few minutes.
+    pub(crate) async fn category_list(
+        &self,
+        c: &super::Caller,
+        sub_accounts: bool,
+    ) -> error::Result<Value> {
+        let key = c.credential().fingerprint();
+        if let Some(v) = self.categories.get(key, sub_accounts) {
+            return Ok(v);
+        }
+        let mut q: Query = Vec::new();
+        if sub_accounts {
+            q.push(("sub_accounts", "true".into()));
+        }
+        let a = c.get("categories", &["categories"], &q).await?;
+        self.categories.put(key, sub_accounts, a.body.clone());
+        Ok(a.body)
+    }
+
+    /// Every category by nominal code, with its group (income, cost_of_sales, admin_expenses
+    /// or general).
+    pub(crate) async fn category_index(
+        &self,
+        c: &super::Caller,
+    ) -> error::Result<std::collections::HashMap<String, (Value, &'static str)>> {
+        let all = self.category_list(c, false).await?;
+        let mut out = std::collections::HashMap::new();
+        for (key, name) in CATEGORY_GROUPS {
+            for cat in all
+                .get(*key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(code) = cat.get("nominal_code").and_then(Value::as_str) {
+                    out.insert(code.to_string(), (cat.clone(), *name));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[tool_router(router = accounting_router, vis = "pub(crate)")]
 impl BooksServer {
     #[tool(
@@ -248,18 +293,13 @@ impl BooksServer {
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut q: Query = Vec::new();
-            if p.sub_accounts == Some(true) {
-                q.push(("sub_accounts", "true".into()));
-            }
-            let a = c.get("categories", &["categories"], &q).await?;
+            let all = self.category_list(&c, p.sub_accounts == Some(true)).await?;
             let mut out = Vec::new();
             for (key, name) in CATEGORY_GROUPS {
                 if group.is_some_and(|g| g != *name) {
                     continue;
                 }
-                for cat in a
-                    .body
+                for cat in all
                     .get(*key)
                     .and_then(Value::as_array)
                     .into_iter()

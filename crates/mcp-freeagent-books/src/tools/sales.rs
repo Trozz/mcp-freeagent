@@ -1352,6 +1352,31 @@ impl BooksServer {
     }
 
     #[tool(
+        description = "One recurring invoice profile in full: customer, frequency, next_recurs_on, end date, status, terms and its line items. FreeAgent's API can only read recurring invoices: create or change them in FreeAgent itself.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub async fn get_recurring_invoice(
+        &self,
+        Parameters(p): Parameters<IdParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        run("get_recurring_invoice", async {
+            let c = self.caller(&parts)?;
+            let id = id_arg("id", &p.id)?;
+            Ok(json_result(
+                &c.one(
+                    "recurring_invoice",
+                    &["recurring_invoices", &id],
+                    "recurring_invoice",
+                    &[],
+                )
+                .await?,
+            ))
+        })
+        .await
+    }
+
+    #[tool(
         description = "Email an invoice, estimate or credit note to the customer through FreeAgent, with a link to view (and pay) it; a draft invoice is marked as sent. Give subject and body, or use_template for FreeAgent's own wording. Show the person the email and get their agreement first.",
         annotations(
             read_only_hint = false,

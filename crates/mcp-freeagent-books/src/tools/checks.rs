@@ -43,15 +43,15 @@ pub struct LoanReviewParams {
     pub as_at_date: Option<String>,
 }
 
-fn ymd(d: NaiveDate) -> String {
+pub(crate) fn ymd(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
 
-fn parse(d: &str) -> Option<NaiveDate> {
+pub(crate) fn parse(d: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()
 }
 
-fn today() -> NaiveDate {
+pub(crate) fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
 
@@ -63,7 +63,7 @@ fn last_month(d: NaiveDate) -> (NaiveDate, NaiveDate) {
 }
 
 /// The company's accounting years as (start, end), from `annual_accounting_periods`.
-fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
+pub(crate) fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
     company
         .get("annual_accounting_periods")
         .and_then(Value::as_array)

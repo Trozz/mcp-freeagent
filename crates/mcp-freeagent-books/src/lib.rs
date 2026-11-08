@@ -2,11 +2,13 @@
 //! signed in, read and written through the FreeAgent API v2.
 
 pub mod api;
+pub mod cache;
 pub mod config;
 pub mod error;
 pub mod oauth;
 pub mod prompts;
 pub mod service;
+pub mod throttle;
 pub mod tools;
 pub mod uploads;
 pub mod verifier;

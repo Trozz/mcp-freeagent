@@ -64,6 +64,17 @@ Journals are tagged `mcp-freeagent` unless another `tag` is given, so `list_jour
 - `year` is the tax year by the year it ends: `2026` for April 2025 to April 2026.
 - `period` is a pay period, `0` to `11`. Leave it out for the year's periods and payments.
 
+## Fixed assets
+
+| Tool | Kind | What it does | Key parameters |
+|---|---|---|---|
+| `list_capital_assets` | read | The fixed asset register: description, asset type, purchase and disposal dates and depreciation profile | `view`: `all`, `disposed` or `disposable` (default the assets still held); `include_history`, `page`, `per_page` |
+| `get_capital_asset` | read | One asset with its history of purchase, depreciation, capital allowances and disposal, each linked to the bill, expense or bank explanation behind it | `id`, `include_history` (default true) |
+| `list_capital_asset_types` | read | FreeAgent's asset types (Computer Equipment, Fixtures and Fittings, Motor Vehicles, Other Capital Asset) and any the company added. Needs Full Access | |
+| `asset_register_check` | read | Bills and expenses of at least the threshold, including VAT, whose description or category names equipment (laptop, camera, furniture, vehicle and so on) but which were booked to an everyday category rather than a capital asset one (the 600s) or linked to an asset; and assets still held with no depreciation. Expect some everyday costs among them: it matches words | `from_date`, `to_date` (default this accounting year), `threshold` (default 500) |
+
+Assets are added to the register by booking a bill line, expense or bank explanation to a capital asset category, with a depreciation profile; FreeAgent's API has no separate create for them.
+
 ## Reviews
 
 | Tool | Kind | What it does | Key parameters |
