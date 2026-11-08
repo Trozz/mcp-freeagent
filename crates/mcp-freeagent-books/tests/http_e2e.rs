@@ -664,3 +664,140 @@ async fn unknown_upload_links_are_refused() {
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     assert!(fake.api_log().is_empty());
 }
+
+/// A tools/call answer in full: content blocks and isError.
+async fn call_tool_raw(
+    app: &axum::Router,
+    token: &str,
+    sid: &str,
+    id: u32,
+    name: &str,
+    args: Value,
+) -> Value {
+    message(
+        send(
+            app,
+            rpc("/freeagent", token, json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}}), Some(sid)),
+        )
+        .await,
+    )
+    .await["result"]
+        .clone()
+}
+
+/// An 8x8 red PNG.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x02, 0x00, 0x00, 0x00, 0x4B, 0x6D, 0x29,
+    0xDC, 0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0x80,
+    0x15, 0x61, 0x17, 0x1D, 0xB4, 0x12, 0x00, 0x28, 0xFF, 0x3F, 0xC1, 0x6E, 0xEC, 0xDF, 0x61, 0x00,
+    0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+#[tokio::test]
+async fn a_receipt_is_sent_held_read_and_then_attached() {
+    use base64::Engine as _;
+    let fake = FakeFreeAgent::start().await;
+    let app = app(&fake).await;
+    let token = sign_in(&app, &fake, "https://books.example.com/freeagent").await;
+    let sid = session(&app, "/freeagent", &token).await;
+
+    // A link for no item: the file is held for the model.
+    let link = call_tool(&app, &token, &sid, 20, "create_upload_link", json!({})).await;
+    let url = link["upload_url"].as_str().unwrap().to_string();
+    let path = url
+        .trim_start_matches("https://books.example.com")
+        .to_string();
+    let res = send(
+        &app,
+        Request::get(&path)
+            .header("host", HOST)
+            .header("accept", "text/html")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    let html = body_text(res).await;
+    assert!(html.contains("Claude will read it"), "{html}");
+
+    let res = send(&app, multipart(&path, "file", "IMG_0001.png", PNG, "*/*")).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(body_text(res).await.contains("received"));
+    assert!(
+        fake.api_log().iter().all(|l| l.method == "GET"),
+        "nothing is sent to FreeAgent until the model attaches it"
+    );
+
+    let st = call_tool(
+        &app,
+        &token,
+        &sid,
+        21,
+        "get_upload_status",
+        json!({"upload_url": url}),
+    )
+    .await;
+    assert_eq!(st["status"], "received");
+    assert_eq!(st["content_type"], "image/png");
+    assert_eq!(st["bytes"], PNG.len());
+
+    // The model sees the photo itself.
+    let read = call_tool_raw(
+        &app,
+        &token,
+        &sid,
+        22,
+        "get_uploaded_file",
+        json!({"upload_url": url}),
+    )
+    .await;
+    assert_ne!(read["isError"], json!(true), "{read}");
+    assert_eq!(read["content"][1]["type"], "image");
+    assert_eq!(read["content"][1]["mimeType"], "image/png");
+    assert_eq!(
+        read["content"][1]["data"],
+        base64::engine::general_purpose::STANDARD.encode(PNG)
+    );
+
+    // Then attaches it to the expense it made from it.
+    call_tool(
+        &app,
+        &token,
+        &sid,
+        23,
+        "attach_file",
+        json!({"target": "expense", "id": "5", "upload_url": url, "description": "Lunch receipt"}),
+    )
+    .await;
+    let put = fake.last("PUT", "expenses/5").body.unwrap();
+    let a = &put["expense"]["attachment"];
+    assert_eq!(a["file_name"], "IMG_0001.png");
+    assert_eq!(a["content_type"], "image/png");
+    assert_eq!(a["description"], "Lunch receipt");
+
+    let st = call_tool(
+        &app,
+        &token,
+        &sid,
+        24,
+        "get_upload_status",
+        json!({"upload_url": url}),
+    )
+    .await;
+    assert_eq!(st["status"], "attached");
+    assert_eq!(st["target"], "expense");
+    let again = call_tool_raw(
+        &app,
+        &token,
+        &sid,
+        25,
+        "get_uploaded_file",
+        json!({"upload_url": url}),
+    )
+    .await;
+    assert_eq!(
+        again["isError"],
+        json!(true),
+        "the file is let go once attached"
+    );
+}

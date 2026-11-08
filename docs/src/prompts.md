@@ -1,6 +1,6 @@
 # Prompts
 
-Prompts are ready-made requests a client can offer you, often as slash commands. They tell the model which tools to call and in what order; they change nothing by themselves. The [Claude Code plugin](claude-code-plugin.md) offers the same 13 as `/freeagent:...` commands.
+Prompts are ready-made requests a client can offer you, often as slash commands. They tell the model which tools to call and in what order; they change nothing by themselves. The [Claude Code plugin](claude-code-plugin.md) offers the same 14 as `/freeagent:...` commands.
 
 | Prompt | Arguments | What it does |
 |---|---|---|
@@ -12,10 +12,11 @@ Prompts are ready-made requests a client can offer you, often as slash commands.
 | `create_invoice` | `request` (required) | Raises an invoice from a plain description, such as "Acme, 3 days consulting at £600 a day, plus £45 train fare": finds the customer, drafts the lines with VAT, and creates and sends it after you approve |
 | `invoice_unbilled_time` | `client` (default every client with unbilled time) | Finds unbilled time and rebillable expenses for a client or project and turns them into a draft invoice after you approve |
 | `log_time` | `work` (required) | Logs time from a plain description, such as "3h on the Acme website yesterday, 1.5h client call today": matches projects and tasks and creates the timeslips after you approve |
-| `record_expense` | `details` (required) | Records a receipt or supplier invoice: works out whether it is an out-of-pocket expense, a bill to pay or a bank payment to explain, picks the category and VAT, and records it after you approve |
+| `record_expense` | `details` (leave out to start from the receipt) | Records a receipt or supplier invoice: reads the receipt you send through an upload link, works out whether it is an out-of-pocket expense, a bill to pay or a bank payment to explain, picks the category and VAT, records it after you approve and attaches the receipt |
 | `vat_check` | `period` (default the next return due) | Checks a VAT return before you file it: the boxes, unexplained transactions and draft items in the period, unusual VAT treatments and the payment due, with a list of what to fix. It files nothing |
 | `tax_deadlines` | `months` (default 6) | Every upcoming tax and filing deadline (VAT, corporation tax, self assessment, payroll, Companies House) with amounts due, most urgent first, and anything overdue or unfiled |
 | `month_end_close` | `month` (default last month) | Checks a month is ready to close: every bank account explained, invoices and bills complete, the suspense account empty and the trial balance right, then reports what blocks closing |
+| `director_loan_review` | `as_at` (default today) | Each director's loan account (what they owe or are owed, with expenses and salary owed to them), what makes it up, the s455 deadline and estimated tax on a loan still owed nine months after the year end, any benefit in kind over £10,000, and ways to clear it. It changes nothing |
 | `cashflow_review` | `months` (default 6) | Money in and out by month, what customers owe and when, bills and tax coming up, and how long the cash will last at the current rate |
 
 ## How they behave

@@ -7,6 +7,10 @@
 //! file (or a client with a shell sends it with `curl -F file=@receipt.pdf <link>`), and the
 //! server attaches it in FreeAgent as the person who made the link.
 //!
+//! A link can also be made for no item: the server then holds the file for [`LINK_TTL`] so the
+//! model can read it (`read_upload`), fill in an expense, bill or explanation from it, and attach
+//! it there (`attach_file` with the link).
+//!
 //! Links live in this process's memory: they last [`LINK_TTL`], work once, and are lost on a
 //! restart. The token is 128 random bits and is the only thing that authorises the upload, so the
 //! page is served without caching or referrers and the token is never logged.
@@ -34,6 +38,8 @@ pub const LINK_TTL: Duration = Duration::from_secs(30 * 60);
 pub const MAX_FILE_BYTES: usize = 5 * 1024 * 1024;
 /// Links remembered at once; expired ones are dropped first.
 const MAX_LINKS: usize = 5_000;
+/// Bytes of uploaded files held for reading at once, across every link.
+const MAX_HELD_BYTES: usize = 100 * 1024 * 1024;
 /// Uploads sent on to FreeAgent at once.
 const MAX_RUNNING: usize = 8;
 /// The API version whose explanation attachments endpoint is used.
@@ -94,7 +100,7 @@ impl Target {
 }
 
 /// A file to attach, checked.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct File {
     pub name: String,
     /// As FreeAgent spells it: `application/x-pdf`, `image/png`, `image/jpeg` or `image/gif`.
@@ -151,6 +157,16 @@ impl File {
             bytes,
             description,
         })
+    }
+
+    /// The content type as the rest of the world spells it (`application/pdf`, not FreeAgent's
+    /// `application/x-pdf`).
+    pub fn mime(&self) -> &'static str {
+        if self.content_type == "application/x-pdf" {
+            "application/pdf"
+        } else {
+            self.content_type
+        }
     }
 
     fn json(&self) -> Value {
@@ -215,19 +231,36 @@ pub async fn attach(
     Ok(a.body)
 }
 
+/// Where an uploaded file goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dest {
+    /// Attached at once to this item.
+    Item { target: Target, id: String },
+    /// Held for the model to read and attach.
+    Held,
+}
+
 /// Where a link stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum State {
-    Waiting { last_error: Option<String> },
+    Waiting {
+        last_error: Option<String>,
+    },
     Uploading,
-    Attached { file_name: String, bytes: usize },
+    /// Uploaded to a link for no item and held for the model.
+    Held {
+        file: File,
+    },
+    Attached {
+        file_name: String,
+        bytes: usize,
+    },
 }
 
 struct Link {
     client: Arc<FaClient>,
     credential: Credential,
-    target: Target,
-    id: String,
+    dest: Dest,
     label: String,
     created: SystemTime,
     expires: Instant,
@@ -237,8 +270,7 @@ struct Link {
 /// What a tool can say about a link.
 #[derive(Debug, Clone)]
 pub struct Status {
-    pub target: Target,
-    pub id: String,
+    pub dest: Dest,
     pub state: State,
     pub expires_in: Duration,
 }
@@ -260,13 +292,12 @@ fn new_token() -> Result<String> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw))
 }
 
-/// Makes a link for attaching a file to item `id` of `target`, described to the person as
-/// `label`. Returns its token and when it expires.
+/// Makes a link for a file going to `dest`, described to the person as `label`. Returns its
+/// token and when it expires.
 pub fn create(
     client: Arc<FaClient>,
     credential: Credential,
-    target: Target,
-    id: &str,
+    dest: Dest,
     label: String,
 ) -> Result<(String, SystemTime)> {
     let token = new_token()?;
@@ -286,8 +317,7 @@ pub fn create(
         Link {
             client,
             credential,
-            target,
-            id: id.to_string(),
+            dest,
             label,
             created,
             expires: now + LINK_TTL,
@@ -305,11 +335,50 @@ pub fn status(token: &str, credential: &Credential) -> Option<Status> {
         return None;
     }
     Some(Status {
-        target: l.target,
-        id: l.id.clone(),
+        dest: l.dest.clone(),
         state: l.state.clone(),
         expires_in: l.expires.saturating_duration_since(Instant::now()),
     })
+}
+
+/// The file held on link `token`, if it has one, has not expired and belongs to `credential`'s
+/// sign-in.
+pub fn held(token: &str, credential: &Credential) -> Option<File> {
+    let all = links();
+    let l = all.get(token)?;
+    if l.credential.fingerprint() != credential.fingerprint() || l.expires <= Instant::now() {
+        return None;
+    }
+    match &l.state {
+        State::Held { file } => Some(file.clone()),
+        _ => None,
+    }
+}
+
+/// Records that the file held on link `token` was attached to item `id` of `target`, and lets
+/// it go.
+pub fn mark_attached(token: &str, target: Target, id: &str) {
+    if let Some(l) = links().get_mut(token)
+        && let State::Held { file } = &l.state
+    {
+        l.state = State::Attached {
+            file_name: file.name.clone(),
+            bytes: file.bytes.len(),
+        };
+        l.dest = Dest::Item {
+            target,
+            id: id.to_string(),
+        };
+    }
+}
+
+fn held_bytes(all: &HashMap<String, Link>) -> usize {
+    all.values()
+        .map(|l| match &l.state {
+            State::Held { file } => file.bytes.len(),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// The token of a link given as the token or as its URL.
@@ -400,18 +469,32 @@ async fn page(Path(token): Path<String>, headers: HeaderMap) -> Response {
         let now = Instant::now();
         all.retain(|_, l| l.expires > now);
         all.get(&token)
-            .map(|l| (l.label.clone(), l.target, l.state.clone(), l.expires))
+            .map(|l| (l.label.clone(), l.dest.clone(), l.state.clone(), l.expires))
     };
-    let Some((label, target, state, expires)) = found else {
+    let Some((label, dest, state, expires)) = found else {
         return answer(&headers, StatusCode::NOT_FOUND, "Upload link", GONE);
     };
-    if let State::Attached { file_name, .. } = state {
-        return answer(
-            &headers,
-            StatusCode::OK,
-            "Already attached",
-            &format!("{file_name} is attached to this {}.", target.noun()),
-        );
+    match (&state, &dest) {
+        (State::Attached { file_name, .. }, Dest::Item { target, .. }) => {
+            return answer(
+                &headers,
+                StatusCode::OK,
+                "Already attached",
+                &format!(
+                    "{file_name} is attached to the {} in FreeAgent.",
+                    target.noun()
+                ),
+            );
+        }
+        (State::Held { file }, _) => {
+            return answer(
+                &headers,
+                StatusCode::OK,
+                "Already received",
+                &format!("{} has been received. Go back to your chat.", file.name),
+            );
+        }
+        _ => {}
     }
     let minutes = expires.saturating_duration_since(Instant::now()).as_secs() / 60;
     let retry = match state {
@@ -420,14 +503,28 @@ async fn page(Path(token): Path<String>, headers: HeaderMap) -> Response {
         } => format!("<p class=\"err\">The last try failed: {}</p>", escape(&e)),
         _ => String::new(),
     };
+    let (title, intro, button) = match &dest {
+        Dest::Item { target, .. } => (
+            "Attach a file",
+            format!(
+                "<p>Attach a receipt or invoice to this {} in FreeAgent:</p><p><strong>{}</strong></p>",
+                target.noun(),
+                escape(&label)
+            ),
+            "Attach",
+        ),
+        Dest::Held => (
+            "Send a receipt",
+            "<p>Choose a receipt or invoice. Claude will read it and fill in the details for you to check before anything is saved in FreeAgent.</p>".to_string(),
+            "Send",
+        ),
+    };
     let body = format!(
-        "<p>Attach a receipt or invoice to this {noun} in FreeAgent:</p><p><strong>{label}</strong></p>{retry}\
+        "{intro}{retry}\
 <form method=\"post\" enctype=\"multipart/form-data\"><input type=\"file\" name=\"file\" accept=\"application/pdf,image/png,image/jpeg,image/gif\" required>\
-<button type=\"submit\">Attach</button></form><p><small>PDF, PNG, JPEG or GIF, up to 5 MB. This link works once and expires in about {minutes} minutes.</small></p>",
-        noun = target.noun(),
-        label = escape(&label),
+<button type=\"submit\">{button}</button></form><p><small>PDF, PNG, JPEG or GIF, up to 5 MB. This link works once and expires in about {minutes} minutes.</small></p>"
     );
-    with_headers(StatusCode::OK, page_html("Attach a file", &body))
+    with_headers(StatusCode::OK, page_html(title, &body))
 }
 
 async fn upload(Path(token): Path<String>, headers: HeaderMap, mut form: Multipart) -> Response {
@@ -438,19 +535,14 @@ async fn upload(Path(token): Path<String>, headers: HeaderMap, mut form: Multipa
             Some(l) if l.expires > Instant::now() => match l.state {
                 State::Waiting { .. } => {
                     l.state = State::Uploading;
-                    Some((
-                        l.client.clone(),
-                        l.credential.clone(),
-                        l.target,
-                        l.id.clone(),
-                    ))
+                    Some((l.client.clone(), l.credential.clone(), l.dest.clone()))
                 }
                 _ => None,
             },
             _ => None,
         }
     };
-    let Some((client, credential, target, id)) = claimed else {
+    let Some((client, credential, dest)) = claimed else {
         return answer(&headers, StatusCode::NOT_FOUND, "Upload link", GONE);
     };
     let release = |error: String| {
@@ -509,6 +601,37 @@ async fn upload(Path(token): Path<String>, headers: HeaderMap, mut form: Multipa
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "Upload failed",
                 &msg,
+            );
+        }
+    };
+    let (target, id) = match dest {
+        Dest::Item { target, id } => (target, id),
+        Dest::Held => {
+            let mut all = links();
+            if held_bytes(&all) + file.bytes.len() > MAX_HELD_BYTES {
+                drop(all);
+                let msg =
+                    "The server is holding too many files just now; try again in a few minutes.";
+                release(msg.into());
+                return answer(
+                    &headers,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Upload failed",
+                    msg,
+                );
+            }
+            let name = file.name.clone();
+            if let Some(l) = all.get_mut(&token) {
+                l.state = State::Held { file };
+                // The model has the link's full time from now to read and attach the file.
+                l.expires = Instant::now() + LINK_TTL;
+            }
+            tracing::info!("file received through an upload link for reading");
+            return answer(
+                &headers,
+                StatusCode::OK,
+                "Received",
+                &format!("{name} has been received. Go back to your chat: Claude can read it now."),
             );
         }
     };

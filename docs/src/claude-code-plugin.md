@@ -1,6 +1,6 @@
 # Claude Code plugin
 
-The repository is also a Claude Code plugin marketplace. Its `freeagent` plugin adds the server's MCP connection and the 13 [prompts](prompts.md) as slash commands.
+The repository is also a Claude Code plugin marketplace. Its `freeagent` plugin adds the server's MCP connection and the 14 [prompts](prompts.md) as slash commands.
 
 ## Install
 
@@ -33,10 +33,11 @@ Each prompt is a command named after it, with `-` for `_`:
 | `/freeagent:create-invoice <request>` | `create_invoice` |
 | `/freeagent:invoice-unbilled-time [client]` | `invoice_unbilled_time` |
 | `/freeagent:log-time <work>` | `log_time` |
-| `/freeagent:record-expense <details>` | `record_expense` |
+| `/freeagent:record-expense [details]` | `record_expense` |
 | `/freeagent:vat-check [period]` | `vat_check` |
 | `/freeagent:tax-deadlines [months]` | `tax_deadlines` |
 | `/freeagent:month-end-close [month]` | `month_end_close` |
+| `/freeagent:director-loan-review [as_at]` | `director_loan_review` |
 | `/freeagent:cashflow-review [months]` | `cashflow_review` |
 
 Type the arguments in plain words after the command, for example `/freeagent:explain-transactions September 2026` or `/freeagent:log-time 3h on the Acme website yesterday`. The command reads each argument from what you typed and asks for a required one that is missing. Commands behave as the prompts do: nothing changes in FreeAgent until you agree.

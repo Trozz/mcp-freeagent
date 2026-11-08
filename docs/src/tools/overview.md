@@ -52,7 +52,7 @@ List tools take `page` (1 to 10000, default 1) and `per_page` (1 to 100, default
 - `locked_attributes`, the field-by-field list of what is locked on an item in a locked accounting period. `is_locked` and `locked_reason` stay.
 - `ni_number` and `unique_tax_reference`: people's National Insurance numbers and tax references.
 
-A page of a list that would come to more than 80,000 characters, more than clients accept in a tool result, is refused with a `too_large` error that says which `per_page` fits.
+A page of a list that would come to more than 50,000 characters (about 17,000 tokens), more than clients reliably accept in a tool result, is refused with a `too_large` error that says which `per_page` fits.
 
 ## Errors
 

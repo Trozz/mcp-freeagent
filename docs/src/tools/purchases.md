@@ -93,10 +93,12 @@ Requests to the server are limited to 1 MiB in all, so a file over about 700 KB 
 
 ### Upload links
 
-Models cannot pass a file shared in a chat to a tool, so for those, and for anything over about 700 KB, use an upload link:
+Models cannot pass a file shared in a chat to a tool, so for those, and for anything over about 700 KB, use an upload link. Made without a target, the link holds the file for 30 minutes so the model can read it, fill in the expense, bill or explanation from it, and attach it to what it made:
 
 | Tool | Kind | What it does | Key parameters |
 |---|---|---|---|
-| `create_upload_link` | write | A single-use link, valid for 30 minutes, where the person picks a PDF, PNG, JPEG or GIF of up to 5 MB. The server attaches it in FreeAgent as them. An expense or bill holds one file: when it already has one, `replaces` names it, because the upload replaces it | `target` (`expense`, `bill` or `bank_transaction_explanation`), `id` |
-| `get_upload_status` | read | `waiting` (with the last error, if a try failed), `uploading` or `attached` | `upload_url` |
-| `attach_file` | write | Attach a file the client can read itself, as base64 | `target`, `id`, `file_name`, `data_base64`, `description` |
+| `create_upload_link` | write | A single-use link, valid for 30 minutes, where the person picks a PDF, PNG, JPEG or GIF of up to 5 MB. With `target` and `id` the server attaches it in FreeAgent as them; an expense or bill holds one file, and when it already has one, `replaces` names it, because the upload replaces it. Without them the file is held for the model | `target` (`expense`, `bill` or `bank_transaction_explanation`) and `id`, or neither |
+| `get_upload_status` | read | `waiting` (with the last error, if a try failed), `uploading`, `received` (held for the model) or `attached` | `upload_url` |
+| `get_uploaded_file` | read | The held file: a photo as an image the model can read, a PDF as an embedded file | `upload_url` |
+| `get_attachment` | read | A file already attached in FreeAgent, such as an expense's receipt, by the attachment id the item shows. The server downloads it from FreeAgent's signed storage link, which lasts 30 seconds, without sending a FreeAgent token | `id` |
+| `attach_file` | write | Attach a held file (`upload_url`), or one the client can read itself as base64 | `target`, `id`, and `upload_url` or `file_name` and `data_base64`; `description` |
