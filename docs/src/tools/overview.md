@@ -1,6 +1,6 @@
 # Working with the tools
 
-Endpoint `/freeagent` (or `freeagent_<tool>` under [`/mcp`](../connecting-clients.md#the-combined-endpoint)). The 79 tools cover one company's books: the company of the FreeAgent user who signed in.
+Endpoint `/freeagent` (or `freeagent_<tool>` under [`/mcp`](../connecting-clients.md#the-combined-endpoint)). The 91 tools cover one company's books: the company of the FreeAgent user who signed in.
 
 | Area | Tools | Page |
 |---|---|---|
@@ -12,6 +12,7 @@ Endpoint `/freeagent` (or `freeagent_<tool>` under [`/mcp`](../connecting-client
 | Bills, expenses and mileage | 11 | [Purchases](purchases.md) |
 | Bank accounts, transactions and explanations | 11 | [Banking](banking.md) |
 | Categories, reports, journals, tax returns, payroll | 12 | [Accounting and tax](accounting.md) |
+| Planning: tax to keep back, dividends, the accountant's pack, year on year | 5 | [Accounting and tax](accounting.md#planning) |
 | Any other FreeAgent endpoint | 2 | [Any other endpoint](raw-api.md) |
 
 A good start in a conversation is `get_company` (company type, VAT status, accounting year) and `business_snapshot` (balances, money owed, unexplained transactions, deadlines).

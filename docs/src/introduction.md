@@ -4,7 +4,7 @@ mcp-freeagent is a self-hosted [Model Context Protocol](https://modelcontextprot
 
 | Endpoint | What it does |
 |---|---|
-| `/freeagent` | 86 [tools](tools/overview.md) and 14 [prompts](prompts.md) for the books of the company whose FreeAgent user signed in |
+| `/freeagent` | 91 [tools](tools/overview.md) and 18 [prompts](prompts.md) for the books of the company whose FreeAgent user signed in |
 | `/mcp` | Every enabled service's tools and prompts in one connector, named `<service>_<tool>`, for example `freeagent_list_invoices`. See [Connecting clients](connecting-clients.md#the-combined-endpoint) |
 
 ## Highlights

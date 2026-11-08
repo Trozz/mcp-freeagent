@@ -43,15 +43,15 @@ pub struct LoanReviewParams {
     pub as_at_date: Option<String>,
 }
 
-fn ymd(d: NaiveDate) -> String {
+pub(crate) fn ymd(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
 
-fn parse(d: &str) -> Option<NaiveDate> {
+pub(crate) fn parse(d: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()
 }
 
-fn today() -> NaiveDate {
+pub(crate) fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
 
@@ -63,7 +63,7 @@ fn last_month(d: NaiveDate) -> (NaiveDate, NaiveDate) {
 }
 
 /// The company's accounting years as (start, end), from `annual_accounting_periods`.
-fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
+pub(crate) fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
     company
         .get("annual_accounting_periods")
         .and_then(Value::as_array)
@@ -80,7 +80,7 @@ fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
 }
 
 /// A whole-pound value from a report (FreeAgent's balance sheet rounds to whole units).
-fn pounds(v: Option<&Value>) -> i64 {
+pub(crate) fn pounds(v: Option<&Value>) -> i64 {
     match v {
         Some(Value::Number(n)) => n
             .as_i64()
@@ -98,19 +98,19 @@ fn pounds(v: Option<&Value>) -> i64 {
 /// One person's accounts with the company, from the balance sheet, in whole pounds. Debit
 /// (positive) means the person owes the company.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Person {
-    name: String,
+pub(crate) struct Person {
+    pub(crate) name: String,
     /// 907-n Director Loan Account.
-    loan: i64,
+    pub(crate) loan: i64,
     /// 905-n Expense Account: negative when the company owes them expenses.
-    expenses: i64,
+    pub(crate) expenses: i64,
     /// 902-n Salary and Bonuses: negative when salary is owed to them.
-    salary: i64,
+    pub(crate) salary: i64,
 }
 
 /// Every person with a loan, expense or salary account on balance sheet `bs`, by their account
 /// suffix (907-1 is person 1).
-fn people(bs: &Value) -> BTreeMap<String, Person> {
+pub(crate) fn people(bs: &Value) -> BTreeMap<String, Person> {
     let mut out: BTreeMap<String, Person> = BTreeMap::new();
     for section in ["current_assets", "current_liabilities"] {
         let Some(accounts) = bs
@@ -157,7 +157,7 @@ fn s455(outstanding: i64) -> String {
 }
 
 impl BooksServer {
-    async fn balance_sheet(&self, c: &Caller, as_at: NaiveDate) -> error::Result<Value> {
+    pub(crate) async fn balance_sheet(&self, c: &Caller, as_at: NaiveDate) -> error::Result<Value> {
         let a = c
             .get(
                 "balance_sheet",
@@ -547,7 +547,11 @@ impl BooksServer {
         Ok(Value::Object(out))
     }
 
-    async fn loan_review(&self, c: &Caller, p: &LoanReviewParams) -> error::Result<Value> {
+    pub(crate) async fn loan_review(
+        &self,
+        c: &Caller,
+        p: &LoanReviewParams,
+    ) -> error::Result<Value> {
         let at = match super::date_arg("as_at_date", p.as_at_date.as_deref())? {
             Some(d) => parse(&d).unwrap_or_else(today),
             None => today(),
