@@ -157,11 +157,11 @@ pub const PROMPTS: &[PromptSpec] = &[
     PromptSpec {
         name: "record_expense",
         title: "Record an expense or bill",
-        description: "Record a receipt or supplier invoice: from the details (or an attached receipt) works out whether it is an out-of-pocket expense, a bill to pay, or a bank payment to explain, picks the category and VAT, and records it after you approve.",
+        description: "Record a receipt or supplier invoice: reads the receipt you send (or the details you give), works out whether it is an out-of-pocket expense, a bill to pay, or a bank payment to explain, picks the category and VAT, records it after you approve, and attaches the receipt.",
         arguments: &[arg(
             "details",
-            "What it was, who from, when, the amount and VAT, and how it was paid (personal card, company card, unpaid).",
-            true,
+            "What it was, who from, when, the amount and VAT, and how it was paid (personal card, company card, unpaid). Leave out to start from the receipt.",
+            false,
         )],
         render: record_expense,
     },
@@ -197,6 +197,17 @@ pub const PROMPTS: &[PromptSpec] = &[
             false,
         )],
         render: month_end_close,
+    },
+    PromptSpec {
+        name: "director_loan_review",
+        title: "Director's loan account review",
+        description: "Where each director's loan account stands: what they owe the company or are owed, what makes it up, the s455 deadline and estimated tax on a loan still owed nine months after the year end, any benefit in kind over 10,000, and ways to clear it.",
+        arguments: &[arg(
+            "as_at",
+            "The date to review at, YYYY-MM-DD. Default: today.",
+            false,
+        )],
+        render: director_loan_review,
     },
     PromptSpec {
         name: "cashflow_review",
@@ -338,8 +349,9 @@ fn log_time(p: &str, a: &Args) -> String {
 
 fn record_expense(p: &str, a: &Args) -> String {
     format!(
-        "Record this receipt or supplier invoice in FreeAgent. If I attached a receipt or invoice, read the supplier, date, amounts and VAT from it.\n\n\
+        "Record this receipt or supplier invoice in FreeAgent.\n\n\
 <details>{}</details>\n\n\
+0. Start from the receipt or invoice if there is one. If I attached it in this chat, read it here. Otherwise call `{p}create_upload_link` with no target, give me the upload_url to open on my phone or computer, and wait until I say it is sent; then read it with `{p}get_uploaded_file`. Take the supplier, date, total, VAT and the supplier's VAT number from it, and tell me what you could not read.\n\
 1. Decide how it belongs in the books, and say why:\n\
    - paid personally by me or an employee and owed back: an expense with `{p}create_expense` (amount is what was spent, positive);\n\
    - mileage: `{p}create_mileage_claim`;\n\
@@ -349,7 +361,7 @@ fn record_expense(p: &str, a: &Args) -> String {
 2. Pick the category with `{p}list_categories` and a query. Work out the VAT: check `{p}get_company` for VAT registration; VAT is reclaimable only with a VAT receipt from a VAT-registered supplier.\n\
 3. Show me: what will be recorded, the category with its nominal code, date, gross amount, VAT and description.\n\
 4. When I agree, record it and show the result.\n\
-5. Attach the receipt or invoice: call `{p}create_upload_link` with the expense, bill or bank transaction explanation you recorded and give me the upload_url to open and pick the file (you cannot pass a file shared in the chat to a tool yourself). When I say it is done, check with `{p}get_upload_status`. If you can read the file yourself, for example from a path with a shell, use `{p}attach_file` for files up to about 700 KB instead.\n\n{}",
+5. Attach the receipt or invoice. If it came through an upload link, call `{p}attach_file` with the item you recorded and that upload_url. Otherwise call `{p}create_upload_link` with the expense, bill or bank transaction explanation you recorded and give me the upload_url to open and pick the file (you cannot pass a file shared in the chat to a tool yourself); when I say it is done, check with `{p}get_upload_status`. If you can read the file yourself, for example from a path with a shell, `{p}attach_file` with data_base64 takes files up to about 700 KB.\n\n{}",
         a.get("details"),
         footer(true)
     )
@@ -361,7 +373,7 @@ fn vat_check(p: &str, a: &Args) -> String {
 <period>{}</period>\n\n\
 1. `{p}list_tax_returns` with kind vat. Take the return whose period matches the one given above; if none is given, the next one due that is not filed. Say which period you took.\n\
 2. `{p}get_tax_return` with kind vat and its period_ends_on for the box 1 to 9 breakdown and payments.\n\
-3. Look for what could make it wrong: for each bank account (`{p}list_bank_accounts`), unexplained transactions in the period (`{p}list_bank_transactions` view unexplained with the period's dates); draft invoices dated in the period (`{p}list_invoices` view draft); bills in the period (`{p}list_bills` with the dates). In the period's explanations and bills, flag VAT treatments worth a second look: EC or reverse charge, zero or exempt rates on usual standard-rated costs, VAT claimed on entertainment or on a supplier who is not VAT registered.\n\
+3. Look for what could make it wrong: `{p}month_end_check` with the period's from_date and to_date lists unexplained bank transactions and guesses to approve, expenses without receipts (and the VAT they reclaim), bills without the supplier's invoice, draft invoices in the period and the suspense balance. Then, in the period's explanations and bills (`{p}list_bank_transaction_explanations`, `{p}list_bills` with the dates), flag VAT treatments worth a second look: EC or reverse charge, zero or exempt rates on usual standard-rated costs, VAT claimed on entertainment or on a supplier who is not VAT registered.\n\
 4. Write: the period and due date; the boxes as a table (box, title, value); the payment due and when; then What to fix before filing, most important first, each with a next step; and what looks fine.\n\n\
 This server cannot file the return: I file it in FreeAgent. Only if I say I have filed it elsewhere, offer `{p}mark_tax_return` with mark_as_filed. Do not judge my tax position beyond what the books show, and suggest asking my accountant about anything uncertain.\n\n{}",
         a.get("period"),
@@ -388,13 +400,26 @@ fn month_end_close(p: &str, a: &Args) -> String {
         "Help me close a month in FreeAgent.\n\n\
 <month>{}</month>\n\n\
 If no month is given above, use last month.\n\n\
-1. For each bank account (`{p}list_bank_accounts`), unexplained transactions dated in or before the month (`{p}list_bank_transactions` view unexplained, to_date the month's last day) and guesses awaiting approval (view marked_for_review).\n\
-2. Draft invoices dated in the month (`{p}list_invoices` view draft) and unbilled time (`{p}list_timeslips` view unbilled to the month's end).\n\
-3. `{p}get_trial_balance` from the accounting year's start to the month's end: report the 999 Suspense balance (it should be zero) and anything else that looks odd, such as a negative bank balance or a large director's loan.\n\
+1. `{p}month_end_check` with the month's first and last day: unexplained transactions and guesses to approve, expenses without receipts, bills without invoices, draft and overdue invoices, the 999 Suspense balance and overdrawn directors' loan accounts, with a to_do list.\n\
+2. Unbilled time to the month's end (`{p}list_timeslips` view unbilled).\n\
+3. `{p}get_trial_balance` from the accounting year's start to the month's end, for anything else that looks odd, such as a negative bank balance. If a director's loan account is overdrawn, `{p}director_loan_review`.\n\
 4. `{p}get_profit_and_loss` for the month alone.\n\
 5. Write: Ready to close (yes or no), What blocks closing (each with a next step), Checks passed, and the month's profit in two lines. Offer to fix the blocking items one by one, starting with the bank.\n\n\
 Do not lock the books. If everything is clean and I ask you to lock the month, use `{p}api_request` with method PUT, path account_locks and body {{\"account_lock\": {{\"locked_to_date\": \"<the month's last day>\"}}}}, after confirming the date with me.\n\n{}",
         a.get("month"),
+        footer(true)
+    )
+}
+
+fn director_loan_review(p: &str, a: &Args) -> String {
+    format!(
+        "Review the directors' loan accounts in FreeAgent.\n\n\
+<as_at>{}</as_at>\n\n\
+1. `{p}director_loan_review`, with as_at_date if a date is given above.\n\
+2. For each loan account that is not clear, find what makes it up: `{p}list_accounting_transactions` with its nominal code (907-1, 907-2...) over the current accounting year, and the year before if it was already owed then. Name the largest items, and point out any that look misfiled, such as net salary, expense repayments or dividends explained as loans, or journals with no matching bank movement.\n\
+3. Write: each director's position in one line (loan, expenses and salary owed to them, net); the s455 position (deadline, amount still owed, estimated tax) and any benefit-in-kind flag; then ways to clear the loan, such as repaying it, setting expenses owed against it with a journal, or a dividend or bonus, noting that a dividend needs distributable profits and paperwork and a bonus goes through payroll.\n\n\
+Change nothing. Offer a journal setting expenses owed against the loan only as a proposal, with its entries, for me to agree first. Suggest checking tax points with my accountant.\n\n{}",
+        a.get("as_at"),
         footer(true)
     )
 }

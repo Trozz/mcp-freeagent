@@ -20,6 +20,9 @@ pub const RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Largest response body read. PDFs come base64-encoded in JSON, so this is generous.
 pub const MAX_BODY_BYTES: usize = 24 * 1024 * 1024;
 const MAX_ERROR_DETAIL: usize = 400;
+/// Largest attachment file downloaded. FreeAgent takes uploads of up to 5 MB; older files can be
+/// a little larger.
+pub const MAX_DOWNLOAD_BYTES: usize = 10 * 1024 * 1024;
 /// Longest raw API path accepted.
 const MAX_PATH_CHARS: usize = 200;
 
@@ -197,6 +200,61 @@ impl FaClient {
 
     pub fn base(&self) -> &Url {
         &self.settings.base
+    }
+
+    /// Whether `url` is where FreeAgent keeps attachment files: its signed storage links (HTTPS
+    /// on amazonaws.com), or the API's own origin.
+    fn is_file_host(&self, url: &Url) -> bool {
+        let api = &self.settings.base;
+        let storage = url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|h| h.ends_with(".amazonaws.com"));
+        let same_origin = url.scheme() == api.scheme()
+            && url.host_str() == api.host_str()
+            && url.port_or_known_default() == api.port_or_known_default();
+        storage || same_origin
+    }
+
+    /// Downloads an attachment's file from the signed link FreeAgent gave for it (`content_src`).
+    /// The link is its own authorisation and expires 30 seconds after it is issued, so call this
+    /// straight after reading the attachment. No FreeAgent token is sent.
+    pub async fn download(&self, link: &str) -> Result<Vec<u8>> {
+        let url = Url::parse(link).map_err(|_| {
+            FaError::Upstream("FreeAgent gave an attachment link that is not a URL".into())
+        })?;
+        if !self.is_file_host(&url) {
+            return Err(FaError::Upstream(format!(
+                "FreeAgent gave an attachment link on an unexpected host ({})",
+                url.host_str().unwrap_or("none")
+            )));
+        }
+        let res =
+            self.http.get(url).send().await.map_err(|e| {
+                FaError::Upstream(format!("downloading the attachment failed: {e}"))
+            })?;
+        if !res.status().is_success() {
+            return Err(FaError::Upstream(format!(
+                "downloading the attachment returned HTTP {}; read the attachment again for a fresh link",
+                res.status().as_u16()
+            )));
+        }
+        let too_large =
+            || FaError::Upstream("the attachment is larger than 10 MB, too large to read".into());
+        if res
+            .content_length()
+            .is_some_and(|n| n > MAX_DOWNLOAD_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let bytes = res
+            .bytes()
+            .await
+            .map_err(|e| FaError::Upstream(format!("downloading the attachment failed: {e}")))?;
+        if bytes.len() > MAX_DOWNLOAD_BYTES {
+            return Err(too_large());
+        }
+        Ok(bytes.to_vec())
     }
 
     pub fn tokens(&self) -> &Tokens {

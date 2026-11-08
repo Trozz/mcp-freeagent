@@ -88,6 +88,8 @@ pub struct FakeState {
     pub expires_in: u64,
     /// Accept the app's credentials only in the form body, refusing HTTP Basic.
     pub body_auth_only: bool,
+    /// Files served without a token at /files/<name>, as FreeAgent's signed storage links are.
+    pub files: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -126,6 +128,14 @@ impl FakeFreeAgent {
     /// The URL of resource `path` on the fake, as FreeAgent writes references.
     pub fn res(&self, path: &str) -> String {
         format!("{}/{path}", self.url)
+    }
+
+    /// Serves `bytes` without a token, as a signed storage link; returns its URL.
+    pub fn file(&self, name: &str, bytes: Vec<u8>) -> String {
+        self.lock().files.insert(name.to_string(), bytes);
+        let mut u = self.url.clone();
+        u.set_path(&format!("/files/{name}"));
+        u.to_string()
     }
 
     /// Serves `answer` for `method` `path` (below /v2).
@@ -302,6 +312,13 @@ async fn handle(
             }
             _ => return json_response(400, &json!({"error": "unsupported_grant_type"}), &[]),
         }
+    }
+
+    if let Some(name) = path.strip_prefix("/files/") {
+        return match st.files.get(name) {
+            Some(b) => (StatusCode::OK, b.clone()).into_response(),
+            None => (StatusCode::FORBIDDEN, "Request has expired").into_response(),
+        };
     }
 
     let token = headers
