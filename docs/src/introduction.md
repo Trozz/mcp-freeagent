@@ -4,14 +4,14 @@ mcp-freeagent is a self-hosted [Model Context Protocol](https://modelcontextprot
 
 | Endpoint | What it does |
 |---|---|
-| `/freeagent` | 86 [tools](tools/overview.md) and 14 [prompts](prompts.md) for the books of the company whose FreeAgent user signed in |
+| `/freeagent` | 90 [tools](tools/overview.md) and 16 [prompts](prompts.md) for the books of the company whose FreeAgent user signed in |
 | `/mcp` | Every enabled service's tools and prompts in one connector, named `<service>_<tool>`, for example `freeagent_list_invoices`. See [Connecting clients](connecting-clients.md#the-combined-endpoint) |
 
 ## Highlights
 
 - **People sign in with FreeAgent itself.** The server sends each person to FreeAgent to log in and approve its app, and keeps the refresh token FreeAgent grants only in encrypted form inside that person's own MCP tokens. There are no API keys to paste, and every call acts as that FreeAgent user, within their access level. See [Signing in with FreeAgent](signing-in.md).
 - **Read and write.** Lists and reports, plus tools that create and change records: raise and send invoices, explain bank transactions, approve FreeAgent's guesses, record bills and expenses, log time, post journals. `api_get` and `api_request` reach every other FreeAgent endpoint.
-- **Prompts as slash commands.** 14 ready-made jobs, such as monthly bookkeeping, explaining bank transactions and chasing overdue invoices. The [Claude Code plugin](claude-code-plugin.md) adds them as `/freeagent:...` commands.
+- **Prompts as slash commands.** 16 ready-made jobs, such as monthly bookkeeping, explaining bank transactions and chasing overdue invoices. The [Claude Code plugin](claude-code-plugin.md) adds them as `/freeagent:...` commands.
 - **Safe by default.** Write tools are annotated so clients ask before running them, and the prompts show what will change and wait for agreement. `FREEAGENT_READ_ONLY=freeagent` hides and refuses every write tool. Every write is recorded in an audit log that never contains arguments or results.
 - A single static Rust binary, also shipped as a `FROM scratch` container image (`ghcr.io/trozz/mcp-freeagent`). TLS end to end, a built-in OAuth 2.1 server for claude.ai custom connectors, and no database.
 

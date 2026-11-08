@@ -4,7 +4,7 @@ A self-hosted [Model Context Protocol](https://modelcontextprotocol.io) server f
 
 | Endpoint | What it does |
 |---|---|
-| `/freeagent` | 86 tools and 14 prompts for the books of the company whose FreeAgent user signed in |
+| `/freeagent` | 90 tools and 16 prompts for the books of the company whose FreeAgent user signed in |
 | `/mcp` | Every enabled service's tools and prompts in one connector, named `<service>_<tool>`, for example `freeagent_list_invoices` |
 
 - **People sign in with FreeAgent itself.** The sign-in page asks the person to approve the MCP client, sends them to FreeAgent to log in and approve this server's app, and keeps the refresh token FreeAgent grants only in encrypted form inside their own tokens. There are no API keys, and the server stores no credential (see [Tokens](#tokens) for the one optional file). Every call acts as that FreeAgent user, within their access level.
@@ -86,10 +86,10 @@ FreeAgent documents HTTP Basic authentication for the app's credentials. If it r
 | Projects and time | `list_projects`, `get_project`, `create_project`, `update_project`, `list_tasks`, `create_task`, `update_task`, `list_timeslips`, `log_time`, `update_timeslip`, `delete_timeslip`, `start_timer`, `stop_timer` |
 | Sales | `list_invoices`, `get_invoice`, `create_invoice` (from lines, or a project's unbilled time and expenses), `update_invoice`, `delete_invoice` (drafts only), `invoice_action` (mark sent, draft, scheduled, cancelled; convert to credit note; duplicate), `list_estimates`, `get_estimate`, `create_estimate`, `estimate_action`, `list_credit_notes`, `get_credit_note`, `create_credit_note`, `list_recurring_invoices`, `send_document_email`, `get_document_pdf`, `list_price_list_items`, `list_email_addresses` |
 | Purchases | `list_bills`, `get_bill`, `create_bill`, `update_bill`, `delete_bill`, `list_expenses`, `get_expense`, `create_expense`, `create_mileage_claim`, `update_expense`, `delete_expense` |
-| Banking | `list_bank_accounts`, `get_bank_account`, `list_bank_transactions`, `get_bank_transaction`, `list_bank_transaction_explanations`, `explain_bank_transaction` (a category, invoice, bill, transfer or user payment), `update_bank_transaction_explanation`, `delete_bank_transaction_explanation`, `approve_explanations` (FreeAgent's guesses), `upload_bank_statement`, `list_bank_feeds` |
+| Banking | `list_bank_accounts`, `get_bank_account`, `list_bank_transactions`, `get_bank_transaction`, `list_bank_transaction_explanations`, `explain_bank_transaction` (a category, invoice, bill, transfer or user payment), `update_bank_transaction_explanation`, `delete_bank_transaction_explanation`, `explain_bank_transactions` (several at once, up to 50), `approve_explanations` (FreeAgent's guesses), `upload_bank_statement`, `list_bank_feeds` |
 | Accounting | `list_categories` (find a nominal code by words), `get_profit_and_loss`, `get_balance_sheet`, `get_trial_balance`, `get_cashflow`, `list_accounting_transactions`, `list_journal_sets`, `create_journal_set` (must balance), `list_tax_returns`, `get_tax_return`, `mark_tax_return`, `get_payroll` |
-| Reviews | `month_end_check` (what to finish before a month end or VAT return: unexplained transactions, missing receipts, drafts, overdue items, suspense, overdrawn directors' loans), `director_loan_review` (each director's loan account, the s455 deadline and estimated tax, benefit in kind) |
-| Attachments | `create_upload_link` (a single-use link for the person to send a receipt or invoice, held for the model to read or attached straight to an expense, bill or bank explanation), `get_upload_status`, `get_uploaded_file` (read what was sent: photos as images, PDFs as files), `get_attachment` (read a file already in FreeAgent), `attach_file` (a sent file, or base64 for files the client can read itself) |
+| Reviews | `month_end_check` (what to finish before a month end or VAT return: unexplained transactions, missing receipts, drafts, overdue items, suspense, overdrawn directors' loans), `director_loan_review` (each director's loan account, the s455 deadline and estimated tax, benefit in kind), `books_health_check` (likely mistakes: duplicate bills and expenses, VAT on things that have none, director payments booked as costs, large bank charges, corrections booked as costs, odd journals), `suggest_explanations` (explanations for unexplained transactions from how the same payee was explained before), `match_receipt` (the bank payment, expense or bill a receipt belongs to) |
+| Attachments | `create_upload_link` (a single-use link for the person to send a receipt or invoice, held for the model to read or attached straight to an expense, bill or bank explanation; `count` makes up to 10 for a pile of receipts), `get_upload_status`, `get_uploaded_file` (read what was sent: photos as images, PDFs as files), `get_attachment` (read a file already in FreeAgent), `attach_file` (a sent file, or base64 for files the client can read itself) |
 | Anything else | `api_get` (read-only) and `api_request` (POST, PUT, DELETE) on any FreeAgent API path |
 
 Good to know:
@@ -107,13 +107,15 @@ Good to know:
 |---|---|
 | `business_snapshot` | A short briefing on cash, money owed, profit so far and what needs attention. |
 | `monthly_bookkeeping` | A month's checklist: transactions to explain, guesses to approve, drafts to send, overdue invoices, unbilled time, bills, missing receipts. |
-| `explain_transactions` | Suggests what each unexplained bank transaction was (invoice, bill, transfer, director, category with VAT) and explains them once you agree. |
+| `explain_transactions` | Suggests what each unexplained bank transaction was (from how the payee was explained before, or an invoice, bill, transfer, director or category with VAT) and explains them once you agree. |
 | `approve_guesses` | Reviews FreeAgent's guessed explanations, flags doubtful ones, approves the rest. |
 | `chase_overdue` | Drafts reminders for overdue invoices by customer, sends approved ones and notes each chase. |
 | `create_invoice` | Raises an invoice from a plain description, then offers to send it. |
 | `invoice_unbilled_time` | Turns unbilled time and rebillable expenses into a draft invoice. |
 | `log_time` | Logs time from a description such as "3h on the Acme website yesterday". |
 | `record_expense` | Reads the receipt you send, then records it as an expense, a bill or a bank explanation and attaches it. |
+| `receipts` | Takes up to 10 receipts at once, matches each to its bank payment, expense or bill, and attaches them. |
+| `books_health_check` | Looks for likely mistakes, such as duplicates, wrong VAT and odd journals, and offers a fix for each. |
 | `vat_check` | Checks a VAT return's boxes and what could make it wrong before you file. |
 | `tax_deadlines` | Upcoming and overdue tax and filing deadlines, most urgent first. |
 | `month_end_close` | Checks a month is ready to close: bank, drafts, suspense account, trial balance. |

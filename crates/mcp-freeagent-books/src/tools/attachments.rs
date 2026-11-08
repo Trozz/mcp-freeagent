@@ -22,6 +22,8 @@ pub struct UploadLinkParams {
     pub target: Option<String>,
     /// The item's id, with target (create the item first if it does not exist yet).
     pub id: Option<String>,
+    /// Without target: how many links to make, one per receipt, for several receipts at once (1 to 10). Default: 1.
+    pub count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -57,6 +59,8 @@ pub struct AttachmentParams {
 /// Largest image handed to the model as an image: base64 makes it about 5 MB, the most a model
 /// takes. Larger images, and PDFs, go as an embedded file.
 const MAX_IMAGE_BYTES: usize = 3_750_000;
+/// Most upload links made in one call.
+const MAX_LINKS: u32 = 10;
 
 /// A tool result carrying a file for the model to read: an image as an image, anything else as
 /// an embedded file with its type.
@@ -142,7 +146,7 @@ impl BooksServer {
 #[tool_router(router = attachments_router, vis = "pub(crate)")]
 impl BooksServer {
     #[tool(
-        description = "Make a link for the person to send a receipt, invoice or other file (PDF, PNG, JPEG or GIF, up to 5 MB): you cannot pass files shared in the chat to a tool yourself. Without target and id, the file is held for you: read it with get_uploaded_file, fill in the expense, bill or explanation from it, then attach it with attach_file and upload_url. With target and id, it is attached to that item at once. Give the person upload_url to open on their phone or computer; it works once, for 30 minutes. With a shell, curl -F file=@<path> <upload_url> works too. Check with get_upload_status.",
+        description = "Make a link for the person to send a receipt, invoice or other file (PDF, PNG, JPEG or GIF, up to 5 MB): you cannot pass files shared in the chat to a tool yourself. Without target and id, the file is held for you (count gives one link per receipt for several): read it with get_uploaded_file, find what it belongs to with match_receipt, fill in the expense, bill or explanation from it, then attach it with attach_file and upload_url. With target and id, it is attached to that item at once. Give the person upload_url to open on their phone or computer; it works once, for 30 minutes. With a shell, curl -F file=@<path> <upload_url> works too. Check with get_upload_status.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -164,23 +168,50 @@ impl BooksServer {
             let id = text_arg("id", p.id.as_deref())?;
             let (target, id) = match (target, id) {
                 (None, None) => {
-                    let (token, expires) = uploads::create(
-                        self.client.clone(),
-                        c.credential().clone(),
-                        Dest::Held,
-                        "a receipt or invoice to read".into(),
-                    )?;
-                    let url = format!("{base}{}/{token}", uploads::UPLOAD_PATH);
-                    let expires: chrono::DateTime<chrono::Utc> = expires.into();
+                    let count = p.count.unwrap_or(1);
+                    if !(1..=MAX_LINKS).contains(&count) {
+                        return Err(FaError::invalid(format!(
+                            "count must be between 1 and {MAX_LINKS}"
+                        )));
+                    }
+                    let mut links = Vec::new();
+                    let mut expires_at = String::new();
+                    for _ in 0..count {
+                        let (token, expires) = uploads::create(
+                            self.client.clone(),
+                            c.credential().clone(),
+                            Dest::Held,
+                            "a receipt or invoice to read".into(),
+                        )?;
+                        let expires: chrono::DateTime<chrono::Utc> = expires.into();
+                        expires_at = expires.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+                        links.push(format!("{base}{}/{token}", uploads::UPLOAD_PATH));
+                    }
+                    if count == 1 {
+                        let url = &links[0];
+                        return Ok(json_result(&json!({
+                            "upload_url": url,
+                            "expires_at": expires_at,
+                            "for": "a file for you to read with get_uploaded_file, then attach with attach_file and this upload_url",
+                            "tell_the_person": "Open this link and choose the receipt or invoice; I'll read it and fill in the details for you to check. It works once and expires in 30 minutes.",
+                            "with_a_shell": format!("curl -F file=@<path to the file> {url}"),
+                        })));
+                    }
                     return Ok(json_result(&json!({
-                        "upload_url": url,
-                        "expires_at": expires.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-                        "for": "a file for you to read with get_uploaded_file, then attach with attach_file and this upload_url",
-                        "tell_the_person": "Open this link and choose the receipt or invoice; I'll read it and fill in the details for you to check. It works once and expires in 30 minutes.",
-                        "with_a_shell": format!("curl -F file=@<path to the file> {url}"),
+                        "upload_urls": links,
+                        "expires_at": expires_at,
+                        "for": "one receipt or invoice per link, for you to read with get_uploaded_file; find what each belongs to with match_receipt, then attach it with attach_file and its upload_url",
+                        "tell_the_person": format!("Open each link and choose one receipt or invoice per link ({count} links); I'll read them and match each to the books for you to check. Each works once and they expire in 30 minutes."),
                     })));
                 }
-                (Some(t), Some(i)) => (Target::parse(&t)?, id_arg("id", &i)?),
+                (Some(t), Some(i)) => {
+                    if p.count.is_some_and(|n| n != 1) {
+                        return Err(FaError::invalid(
+                            "count is for receipts to read first; leave it out with target and id",
+                        ));
+                    }
+                    (Target::parse(&t)?, id_arg("id", &i)?)
+                }
                 _ => {
                     return Err(FaError::invalid(
                         "give target and id together, or neither for a receipt to read first",

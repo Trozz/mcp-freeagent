@@ -63,7 +63,7 @@ fn last_month(d: NaiveDate) -> (NaiveDate, NaiveDate) {
 }
 
 /// The company's accounting years as (start, end), from `annual_accounting_periods`.
-fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
+pub(crate) fn accounting_years(company: &Value) -> Vec<(NaiveDate, NaiveDate)> {
     company
         .get("annual_accounting_periods")
         .and_then(Value::as_array)

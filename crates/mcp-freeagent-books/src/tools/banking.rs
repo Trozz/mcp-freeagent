@@ -23,6 +23,8 @@ use serde_json::{Map, Value, json};
 
 /// Most explanations approved in one call.
 const MAX_APPROVALS: usize = 200;
+/// Most transactions explained in one call to explain_bank_transactions.
+const MAX_EXPLAIN: usize = 50;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -104,6 +106,13 @@ pub struct ExplainParams {
     pub bank_transaction_id: String,
     #[serde(flatten)]
     pub fields: ExplanationFields,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ExplainManyParams {
+    /// One explanation per transaction, each as explain_bank_transaction takes it (suggest_explanations gives them as explain_with). Up to 50.
+    pub explanations: Vec<ExplainParams>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -350,6 +359,77 @@ fn awaiting(transactions: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Explains one bank transaction as [`BooksServer::explain_bank_transaction`] does, returning the
+/// explanation written.
+async fn explain_one(c: &Caller, p: &ExplainParams) -> error::Result<Value> {
+    let tx_id = id_arg("bank_transaction_id", &p.bank_transaction_id)?;
+    let mut body = explanation_body(c, &p.fields)?;
+    check_target(&body)?;
+    let file = p.fields.attachment.as_ref().map(file_of).transpose()?;
+    let tx = c
+        .one(
+            "bank_transaction",
+            &["bank_transactions", &tx_id],
+            "bank_transaction",
+            &[],
+        )
+        .await?;
+    let unexplained = pence(tx.get("unexplained_amount"));
+    if unexplained == Some(0) {
+        return Err(FaError::invalid(format!(
+            "bank transaction {tx_id} is already fully explained; change its explanation with update_bank_transaction_explanation"
+        )));
+    }
+    if !body.contains_key("gross_value") {
+        let amount = tx
+            .get("unexplained_amount")
+            .or_else(|| tx.get("amount"))
+            .cloned()
+            .ok_or_else(|| FaError::invalid("give gross_value: the transaction has no amount"))?;
+        body.insert("gross_value".into(), amount);
+    } else if let (Some(given), Some(left)) = (pence(body.get("gross_value")), unexplained) {
+        if given.signum() != left.signum() {
+            return Err(FaError::invalid(format!(
+                "gross_value must have the transaction's sign: money out is negative, money in positive (unexplained amount {})",
+                view::money(left)
+            )));
+        }
+        if given.abs() > left.abs() {
+            return Err(FaError::invalid(format!(
+                "gross_value is more than the unexplained amount, {}",
+                view::money(left)
+            )));
+        }
+    }
+    if !body.contains_key("dated_on")
+        && let Some(d) = tx.get("dated_on")
+    {
+        body.insert("dated_on".into(), d.clone());
+    }
+    if !body.contains_key("description")
+        && body.contains_key("category")
+        && let Some(d) = tx.get("description")
+    {
+        body.insert("description".into(), d.clone());
+    }
+    body.insert(
+        "bank_transaction".into(),
+        Value::from(c.url("bank_transactions", &tx_id)),
+    );
+    let mut out = c
+        .write(
+            Method::POST,
+            "create_explanation",
+            &["bank_transaction_explanations"],
+            &[],
+            Some(&wrap("bank_transaction_explanation", body)),
+            "bank_transaction_explanation",
+        )
+        .await?;
+    attach_after(c, &mut out, file).await;
+    Ok(out)
+}
+
 #[tool_router(router = banking_router, vis = "pub(crate)")]
 impl BooksServer {
     #[tool(
@@ -572,62 +652,66 @@ impl BooksServer {
     ) -> Result<CallToolResult, McpError> {
         run("explain_bank_transaction", async {
             let c = self.caller(&parts)?;
-            let tx_id = id_arg("bank_transaction_id", &p.bank_transaction_id)?;
-            let mut body = explanation_body(&c, &p.fields)?;
-            check_target(&body)?;
-            let file = p.fields.attachment.as_ref().map(file_of).transpose()?;
-            let tx = c.one("bank_transaction", &["bank_transactions", &tx_id], "bank_transaction", &[]).await?;
-            let unexplained = pence(tx.get("unexplained_amount"));
-            if unexplained == Some(0) {
+            Ok(json_result(&explain_one(&c, &p).await?))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Explain several bank transactions in one call, e.g. the suggestions from suggest_explanations the person agreed to: each entry is what explain_bank_transaction takes. They are explained one by one; the result says which were explained and which failed and why, so a failure never stops the rest. Show the person the list and get their agreement first.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    pub async fn explain_bank_transactions(
+        &self,
+        Parameters(p): Parameters<ExplainManyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        run("explain_bank_transactions", async {
+            let c = self.caller(&parts)?;
+            if p.explanations.is_empty() || p.explanations.len() > MAX_EXPLAIN {
                 return Err(FaError::invalid(format!(
-                    "bank transaction {tx_id} is already fully explained; change its explanation with update_bank_transaction_explanation"
+                    "give between 1 and {MAX_EXPLAIN} explanations"
                 )));
             }
-            if !body.contains_key("gross_value") {
-                let amount = tx
-                    .get("unexplained_amount")
-                    .or_else(|| tx.get("amount"))
-                    .cloned()
-                    .ok_or_else(|| FaError::invalid("give gross_value: the transaction has no amount"))?;
-                body.insert("gross_value".into(), amount);
-            } else if let (Some(given), Some(left)) = (pence(body.get("gross_value")), unexplained) {
-                if given.signum() != left.signum() {
-                    return Err(FaError::invalid(format!(
-                        "gross_value must have the transaction's sign: money out is negative, money in positive (unexplained amount {})",
-                        view::money(left)
-                    )));
+            let mut explained = Vec::new();
+            let mut failed = Vec::new();
+            for e in &p.explanations {
+                match explain_one(&c, e).await {
+                    Ok(v) => explained.push(json!({
+                        "bank_transaction_id": e.bank_transaction_id,
+                        "explanation_id": v.get("id"),
+                        "attachment_error": v.get("attachment_error"),
+                    })),
+                    // Out of requests: the rest would fail the same way.
+                    Err(err @ FaError::RateLimited { .. }) => {
+                        failed.push(json!({"bank_transaction_id": e.bank_transaction_id, "error": format!("{}: {err}", err.kind())}));
+                        break;
+                    }
+                    Err(err) => failed.push(json!({
+                        "bank_transaction_id": e.bank_transaction_id,
+                        "error": format!("{}: {err}", err.kind()),
+                    })),
                 }
-                if given.abs() > left.abs() {
-                    return Err(FaError::invalid(format!(
-                        "gross_value is more than the unexplained amount, {}",
-                        view::money(left)
-                    )));
-                }
             }
-            if !body.contains_key("dated_on")
-                && let Some(d) = tx.get("dated_on")
-            {
-                body.insert("dated_on".into(), d.clone());
+            let not_tried = p.explanations.len() - explained.len() - failed.len();
+            let mut out = json!({
+                "explained": explained.len(),
+                "failed": failed.len(),
+                "results": explained,
+            });
+            if !failed.is_empty() {
+                out["failures"] = Value::from(failed);
             }
-            if !body.contains_key("description")
-                && body.contains_key("category")
-                && let Some(d) = tx.get("description")
-            {
-                body.insert("description".into(), d.clone());
+            if not_tried > 0 {
+                out["not_tried"] = Value::from(not_tried);
+                out["note"] = Value::from("FreeAgent's request limit was reached: wait a minute, then explain the rest");
             }
-            body.insert("bank_transaction".into(), Value::from(c.url("bank_transactions", &tx_id)));
-            let mut out = c
-                .write(
-                    Method::POST,
-                    "create_explanation",
-                    &["bank_transaction_explanations"],
-                    &[],
-                    Some(&wrap("bank_transaction_explanation", body)),
-                    "bank_transaction_explanation",
-                )
-                .await?;
-            attach_after(&c, &mut out, file).await;
-            Ok(json_result(&out))
+            Ok(json_result(&view::prune(out).unwrap_or_default()))
         })
         .await
     }

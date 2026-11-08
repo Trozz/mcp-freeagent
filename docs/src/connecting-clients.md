@@ -37,7 +37,7 @@ Any client that speaks the MCP Streamable HTTP transport and completes the OAuth
 
 ## The combined endpoint
 
-`/mcp` serves every enabled service's tools and prompts as `<service>_<name>`. mcp-freeagent has one service, so `/mcp` offers the same 86 tools and 14 prompts as `/freeagent`, prefixed `freeagent_`, and the prompts' text names the prefixed tools.
+`/mcp` serves every enabled service's tools and prompts as `<service>_<name>`. mcp-freeagent has one service, so `/mcp` offers the same 90 tools and 16 prompts as `/freeagent`, prefixed `freeagent_`, and the prompts' text names the prefixed tools.
 
 - It is its own OAuth protected resource, with metadata at `/.well-known/oauth-protected-resource/mcp`. A token issued for `/mcp` works only there, and a token for `/freeagent` does not work on `/mcp`.
 - `FREEAGENT_READ_ONLY` applies there too: the write tools are hidden and refused.
