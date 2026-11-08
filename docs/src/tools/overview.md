@@ -1,6 +1,6 @@
 # Working with the tools
 
-Endpoint `/freeagent` (or `freeagent_<tool>` under [`/mcp`](../connecting-clients.md#the-combined-endpoint)). The 79 tools cover one company's books: the company of the FreeAgent user who signed in.
+Endpoint `/freeagent` (or `freeagent_<tool>` under [`/mcp`](../connecting-clients.md#the-combined-endpoint)). The 90 tools cover one company's books: the company of the FreeAgent user who signed in.
 
 | Area | Tools | Page |
 |---|---|---|
@@ -10,8 +10,10 @@ Endpoint `/freeagent` (or `freeagent_<tool>` under [`/mcp`](../connecting-client
 | Timeslips and timers | 6 | [Projects and time](projects-and-time.md#timeslips-and-timers) |
 | Invoices, estimates, credit notes | 18 | [Sales](sales.md) |
 | Bills, expenses and mileage | 11 | [Purchases](purchases.md) |
-| Bank accounts, transactions and explanations | 11 | [Banking](banking.md) |
+| Bank accounts, transactions and explanations | 12 | [Banking](banking.md) |
+| Receipts and attachments | 5 | [Purchases](purchases.md#attachments) |
 | Categories, reports, journals, tax returns, payroll | 12 | [Accounting and tax](accounting.md) |
+| Reviews and checks | 5 | [Accounting and tax](accounting.md#reviews) |
 | Any other FreeAgent endpoint | 2 | [Any other endpoint](raw-api.md) |
 
 A good start in a conversation is `get_company` (company type, VAT status, accounting year) and `business_snapshot` (balances, money owed, unexplained transactions, deadlines).

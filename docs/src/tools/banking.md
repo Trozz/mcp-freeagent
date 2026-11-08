@@ -38,6 +38,7 @@ Upload whole days: FreeAgent skips lines that match one already there by date, a
 | `explain_bank_transaction` | write | Explain (categorise) a transaction: what the money was (below) | `bank_transaction_id`, and one of `category`, `paid_invoice_id`, `paid_bill_id`, `transfer_bank_account_id` or `paid_user_id` |
 | `update_bank_transaction_explanation` | write | Change only the fields given. `marked_for_review: false` approves one FreeAgent guessed | `id`, explanation fields, `marked_for_review` |
 | `delete_bank_transaction_explanation` | write, destructive | Delete an explanation, leaving the transaction unexplained again | `id` |
+| `explain_bank_transactions` | write | Explain up to 50 transactions in one call, each as `explain_bank_transaction` takes it, such as the `explain_with` suggestions from `suggest_explanations`. One failing does not stop the rest; the result lists which were explained and which failed, and stops early if FreeAgent's request limit is reached | `explanations` |
 | `approve_explanations` | write | Approve explanations FreeAgent guessed in one account (below) | `bank_account_id`, `explanation_ids` or `approve_all`, `from_date`, `to_date` |
 
 ### Explaining a transaction

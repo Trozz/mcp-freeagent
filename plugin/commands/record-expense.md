@@ -21,7 +21,7 @@ Record this receipt or supplier invoice in FreeAgent.
 - paid personally by me or an employee and owed back: an expense with `create_expense` (amount is what was spent, positive);
 - mileage: `create_mileage_claim`;
 - a supplier's invoice not yet paid, or paid later from the bank: a bill with `create_bill` (find or create the supplier with `search_contacts`);
-- already paid from a company bank account or card: find the transaction with `list_bank_transactions` (view unexplained, near the date) and explain it with `explain_bank_transaction`.
+- already paid from a company bank account or card: find the transaction with `match_receipt` (the total and date, and the supplier) and explain it with `explain_bank_transaction`; if match_receipt finds an expense or bill already recorded for it, attach the receipt to that instead of recording it again.
 If it is unclear, ask me how it was paid.
 2. Pick the category with `list_categories` and a query. Work out the VAT: check `get_company` for VAT registration; VAT is reclaimable only with a VAT receipt from a VAT-registered supplier.
 3. Show me: what will be recorded, the category with its nominal code, date, gross amount, VAT and description.

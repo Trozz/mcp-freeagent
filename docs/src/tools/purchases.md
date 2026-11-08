@@ -97,7 +97,7 @@ Models cannot pass a file shared in a chat to a tool, so for those, and for anyt
 
 | Tool | Kind | What it does | Key parameters |
 |---|---|---|---|
-| `create_upload_link` | write | A single-use link, valid for 30 minutes, where the person picks a PDF, PNG, JPEG or GIF of up to 5 MB. With `target` and `id` the server attaches it in FreeAgent as them; an expense or bill holds one file, and when it already has one, `replaces` names it, because the upload replaces it. Without them the file is held for the model | `target` (`expense`, `bill` or `bank_transaction_explanation`) and `id`, or neither |
+| `create_upload_link` | write | A single-use link, valid for 30 minutes, where the person picks a PDF, PNG, JPEG or GIF of up to 5 MB. With `target` and `id` the server attaches it in FreeAgent as them; an expense or bill holds one file, and when it already has one, `replaces` names it, because the upload replaces it. Without them the file is held for the model, and `count` makes up to 10 links at once, one per receipt | `target` (`expense`, `bill` or `bank_transaction_explanation`) and `id`, or neither (then `count`) |
 | `get_upload_status` | read | `waiting` (with the last error, if a try failed), `uploading`, `received` (held for the model) or `attached` | `upload_url` |
 | `get_uploaded_file` | read | The held file: a photo as an image the model can read, a PDF as an embedded file | `upload_url` |
 | `get_attachment` | read | A file already attached in FreeAgent, such as an expense's receipt, by the attachment id the item shows. The server downloads it from FreeAgent's signed storage link, which lasts 30 seconds, without sending a FreeAgent token | `id` |

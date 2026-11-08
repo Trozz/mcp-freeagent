@@ -166,6 +166,28 @@ pub const PROMPTS: &[PromptSpec] = &[
         render: record_expense,
     },
     PromptSpec {
+        name: "receipts",
+        title: "Sort out a pile of receipts",
+        description: "Send several receipts or invoices at once: each is read, matched to the bank payment, expense or bill it belongs to (or recorded as a new one), and attached after you approve.",
+        arguments: &[arg(
+            "how_many",
+            "How many receipts you have, up to 10. Default: ask.",
+            false,
+        )],
+        render: receipts,
+    },
+    PromptSpec {
+        name: "books_health_check",
+        title: "Check the books for mistakes",
+        description: "Look for likely mistakes: duplicate bills or expenses, VAT reclaimed on things that have none, payments to directors booked as costs, large bank charges or corrections booked as costs, and journals worth a second look, with a fix offered for each.",
+        arguments: &[arg(
+            "period",
+            "Dates to check, e.g. \"this accounting year\" or 2026-04-01 to 2026-09-30. Default: the accounting year to date.",
+            false,
+        )],
+        render: books_health_check,
+    },
+    PromptSpec {
         name: "vat_check",
         title: "VAT return check",
         description: "Check a VAT return before you file it: the boxes, unexplained transactions and draft items in the period, unusual VAT treatments and the payment due, with a list of what to fix. It does not file anything.",
@@ -268,11 +290,11 @@ fn explain_transactions(p: &str, a: &Args) -> String {
 <bank_account>{}</bank_account>\n<period>{}</period>\n\n\
 If no bank account is given, cover every account that is not hidden; if no period is given, take everything unexplained.\n\n\
 1. `{p}list_bank_accounts` to find the account ids (match the name given, ignoring case). If a name matches none or several, ask me.\n\
-2. For each account, `{p}list_bank_transactions` with view unexplained (and the period's dates), 100 per page, following next_page up to 3 pages. Note each transaction's unexplained_amount.\n\
+2. `{p}suggest_explanations` (with bank_account_id for one account) suggests an explanation for each unexplained transaction from how the same payee was explained before, with a confidence. For a period, or more than it returns, also use `{p}list_bank_transactions` with view unexplained and the dates, 100 per page, up to 3 pages. Note each transaction's unexplained_amount.\n\
 3. To find matches: `{p}list_invoices` with view open_or_overdue (money in may be a customer paying), `{p}list_bills` with view open_or_overdue (money out may pay a bill), and the other accounts' transactions for transfers. Call `{p}list_categories` with a query when you need a category, for example \"software\" or \"travel\". Call `{p}get_company` once to know whether the company is VAT registered.\n\
-4. For each transaction suggest one explanation: paid_invoice_id when the amount and customer match an open invoice's due_value; paid_bill_id when they match a bill; transfer_bank_account_id for an equal and opposite amount in another of the company's accounts; paid_user_id for money to or from a director (salary, expenses repaid, director's loan); otherwise a category by nominal code with the VAT rate, or Out of scope for things like bank transfers between people and wages. Say how sure you are (sure, likely, guess) and why.\n\
+4. For each transaction take the suggestion from history unless something below fits better (an open invoice or bill for the amount wins over a category), and otherwise suggest one explanation: paid_invoice_id when the amount and customer match an open invoice's due_value; paid_bill_id when they match a bill; transfer_bank_account_id for an equal and opposite amount in another of the company's accounts; paid_user_id for money to or from a director (salary, expenses repaid, director's loan); otherwise a category by nominal code with the VAT rate, or Out of scope for things like bank transfers between people and wages. Say how sure you are (sure, likely, guess) and why.\n\
 5. Show them as a table: date, amount, description, suggestion, VAT, confidence. Leave anything you cannot tell as a question for me rather than guessing.\n\
-6. When I agree, call `{p}explain_bank_transaction` once per transaction with bank_transaction_id and the agreed explanation; leave gross_value out to explain the whole unexplained amount. Report what was explained and anything that failed.\n\n{}",
+6. When I agree, call `{p}explain_bank_transactions` with the agreed explanations, up to 50 at a time (each as explain_bank_transaction takes it, e.g. a suggestion's explain_with); leave gross_value out to explain the whole unexplained amount. Report what was explained and anything that failed.\n\n{}",
         a.get("bank_account"),
         a.get("period"),
         footer(true)
@@ -356,7 +378,7 @@ fn record_expense(p: &str, a: &Args) -> String {
    - paid personally by me or an employee and owed back: an expense with `{p}create_expense` (amount is what was spent, positive);\n\
    - mileage: `{p}create_mileage_claim`;\n\
    - a supplier's invoice not yet paid, or paid later from the bank: a bill with `{p}create_bill` (find or create the supplier with `{p}search_contacts`);\n\
-   - already paid from a company bank account or card: find the transaction with `{p}list_bank_transactions` (view unexplained, near the date) and explain it with `{p}explain_bank_transaction`.\n\
+   - already paid from a company bank account or card: find the transaction with `{p}match_receipt` (the total and date, and the supplier) and explain it with `{p}explain_bank_transaction`; if match_receipt finds an expense or bill already recorded for it, attach the receipt to that instead of recording it again.\n\
    If it is unclear, ask me how it was paid.\n\
 2. Pick the category with `{p}list_categories` and a query. Work out the VAT: check `{p}get_company` for VAT registration; VAT is reclaimable only with a VAT receipt from a VAT-registered supplier.\n\
 3. Show me: what will be recorded, the category with its nominal code, date, gross amount, VAT and description.\n\
@@ -367,13 +389,42 @@ fn record_expense(p: &str, a: &Args) -> String {
     )
 }
 
+fn receipts(p: &str, a: &Args) -> String {
+    format!(
+        "Help me sort out several receipts or supplier invoices in FreeAgent.\n\n\
+<how_many>{}</how_many>\n\n\
+If no number is given, ask me how many receipts I have (at most 10 at a time).\n\n\
+1. `{p}create_upload_link` with no target and count set to that number. Give me the links and ask me to open each one and send one receipt per link; wait until I say they are sent. Receipts I attach in this chat you can read here instead.\n\
+2. Read each with `{p}get_uploaded_file`, using its upload_url. Note the supplier, date, total and VAT, and anything you could not read. A link I did not use answers waiting: skip it.\n\
+3. For each, `{p}match_receipt` with its total, date and supplier, to find the bank payment, expense or bill it belongs to.\n\
+4. Show me one table: receipt (supplier, date, total), the best match and why, and what you will do: attach it to that item; explain an unexplained bank payment with a category and VAT first, then attach; or record it as a new expense (`{p}create_expense`) or bill (`{p}create_bill`) if nothing matches. Check `{p}get_company` once for VAT registration: VAT is reclaimable only with a VAT receipt from a VAT-registered supplier.\n\
+5. When I agree, do it: `{p}explain_bank_transaction` or the create tool where needed, then `{p}attach_file` with the item and the receipt's upload_url. Report what was attached where, and anything that failed.\n\n{}",
+        a.get("how_many"),
+        footer(true)
+    )
+}
+
+fn books_health_check(p: &str, a: &Args) -> String {
+    format!(
+        "Check my FreeAgent books for likely mistakes.\n\n\
+<period>{}</period>\n\n\
+If no period is given, check the accounting year to date.\n\n\
+1. `{p}books_health_check`, with from_date and to_date if a period is given. Each finding says why it was flagged.\n\
+2. For each section with findings, look closer where it helps: `{p}get_bill` or `{p}get_expense` for possible duplicates (same supplier, amount and dates; a monthly subscription is not a duplicate), `{p}list_categories` for the right category, and `{p}list_accounting_transactions` for what a journal or account holds.\n\
+3. Write: the period; then, most important first, each finding as one line with what looks wrong, how sure you are, and the fix: delete a duplicate, change a category or VAT rate with `{p}update_bank_transaction_explanation`, `{p}update_expense` or `{p}update_bill`, explain a director's payment with paid_user_id, or a correcting journal. Say plainly where it is only a question for my accountant. Then say which checks found nothing.\n\
+4. Offer the fixes, and make the ones I agree to.\n\n{}",
+        a.get("period"),
+        footer(true)
+    )
+}
+
 fn vat_check(p: &str, a: &Args) -> String {
     format!(
         "Check a VAT return in FreeAgent before I file it.\n\n\
 <period>{}</period>\n\n\
 1. `{p}list_tax_returns` with kind vat. Take the return whose period matches the one given above; if none is given, the next one due that is not filed. Say which period you took.\n\
 2. `{p}get_tax_return` with kind vat and its period_ends_on for the box 1 to 9 breakdown and payments.\n\
-3. Look for what could make it wrong: `{p}month_end_check` with the period's from_date and to_date lists unexplained bank transactions and guesses to approve, expenses without receipts (and the VAT they reclaim), bills without the supplier's invoice, draft invoices in the period and the suspense balance. Then, in the period's explanations and bills (`{p}list_bank_transaction_explanations`, `{p}list_bills` with the dates), flag VAT treatments worth a second look: EC or reverse charge, zero or exempt rates on usual standard-rated costs, VAT claimed on entertainment or on a supplier who is not VAT registered.\n\
+3. Look for what could make it wrong: `{p}month_end_check` with the period's from_date and to_date lists unexplained bank transactions and guesses to approve, expenses without receipts (and the VAT they reclaim), bills without the supplier's invoice, draft invoices in the period and the suspense balance. `{p}books_health_check` with the same dates flags VAT reclaimed on things that usually have none and possible duplicates. Then, in the period's explanations and bills (`{p}list_bank_transaction_explanations`, `{p}list_bills` with the dates), flag VAT treatments worth a second look: EC or reverse charge, zero or exempt rates on usual standard-rated costs, VAT claimed on entertainment or on a supplier who is not VAT registered.\n\
 4. Write: the period and due date; the boxes as a table (box, title, value); the payment due and when; then What to fix before filing, most important first, each with a next step; and what looks fine.\n\n\
 This server cannot file the return: I file it in FreeAgent. Only if I say I have filed it elsewhere, offer `{p}mark_tax_return` with mark_as_filed. Do not judge my tax position beyond what the books show, and suggest asking my accountant about anything uncertain.\n\n{}",
         a.get("period"),

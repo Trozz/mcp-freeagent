@@ -675,6 +675,9 @@ fn every_tool_has_a_description_and_the_right_hints() {
             "api_get",
             "month_end_check",
             "director_loan_review",
+            "books_health_check",
+            "suggest_explanations",
+            "match_receipt",
         ]
         .iter()
         .any(|p| name.starts_with(p));
@@ -1192,6 +1195,334 @@ async fn attach_file_takes_an_upload_or_base64_but_not_both() {
         .await
         .unwrap();
     assert!(error_text(&r).contains("together"), "{}", error_text(&r));
+}
+
+#[tokio::test]
+async fn the_health_check_flags_duplicates_vat_director_payments_and_journals() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "company",
+        Canned::ok(json!({"company": {"annual_accounting_periods": [
+            {"starts_on": "2025-10-01", "ends_on": "2026-09-30"},
+            {"starts_on": "2026-10-01", "ends_on": "2027-09-30"}
+        ]}})),
+    );
+    fake.on(
+        "GET",
+        "categories",
+        Canned::ok(json!({"admin_expenses_categories": [
+            {"url": fake.res("categories/285"), "description": "Computer Software", "nominal_code": "285"},
+            {"url": fake.res("categories/363"), "description": "Bank/Finance Charges", "nominal_code": "363"},
+            {"url": fake.res("categories/365"), "description": "Insurance", "nominal_code": "365"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "bills",
+        Canned::ok(json!({"bills": [
+            {"url": fake.res("bills/1"), "contact": fake.res("contacts/4"), "contact_name": "Acme", "total_value": "60.0", "dated_on": "2026-10-01", "reference": "A1"},
+            {"url": fake.res("bills/2"), "contact": fake.res("contacts/4"), "contact_name": "Acme", "total_value": "60.00", "dated_on": "2026-10-04", "reference": "A1"},
+            {"url": fake.res("bills/3"), "contact": fake.res("contacts/4"), "contact_name": "Acme", "total_value": "60.0", "dated_on": "2026-11-01", "reference": "A2"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "expenses",
+        Canned::ok(json!({"expenses": [
+            {"url": fake.res("expenses/1"), "user": fake.res("users/7"), "category": fake.res("categories/365"), "dated_on": "2026-10-02", "description": "Van insurance", "gross_value": "-120.00", "sales_tax_value": "-20.00"},
+            {"url": fake.res("expenses/2"), "user": fake.res("users/7"), "category": fake.res("categories/285"), "dated_on": "2026-10-05", "description": "Adobe", "gross_value": "-19.99"},
+            {"url": fake.res("expenses/3"), "user": fake.res("users/7"), "category": fake.res("categories/285"), "dated_on": "2026-10-06", "description": "Adobe", "gross_value": "-19.99"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "users",
+        Canned::ok(json!({"users": [
+            {"url": fake.res("users/7"), "first_name": "Ann", "last_name": "Leer", "role": "Director"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "bank_accounts",
+        Canned::ok(
+            json!({"bank_accounts": [{"url": fake.res("bank_accounts/1"), "name": "Main"}]}),
+        ),
+    );
+    fake.on(
+        "GET",
+        "bank_transaction_explanations",
+        Canned::ok(json!({"bank_transaction_explanations": [
+            {"url": fake.res("bank_transaction_explanations/1"), "category": fake.res("categories/285"), "dated_on": "2026-10-07", "description": "A LEER expenses", "gross_value": "-250.00"},
+            {"url": fake.res("bank_transaction_explanations/2"), "category": fake.res("categories/363"), "dated_on": "2026-10-08", "description": "Account Balance correction", "gross_value": "-6738.73"},
+            {"url": fake.res("bank_transaction_explanations/3"), "paid_user": fake.res("users/7"), "dated_on": "2026-10-09", "description": "A LEER", "gross_value": "-500.00"},
+            {"url": fake.res("bank_transaction_explanations/4"), "category": fake.res("categories/363"), "dated_on": "2026-10-10", "description": "Monthly fee", "gross_value": "-5.00"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "journal_sets",
+        Canned::ok(json!({"journal_sets": [
+            {"url": fake.res("journal_sets/1"), "dated_on": "2026-10-31", "description": "Sale of Car"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "journal_sets/1",
+        Canned::ok(json!({"journal_set": {"url": fake.res("journal_sets/1"), "dated_on": "2026-10-31", "description": "Sale of Car", "journal_entries": [
+            {"category": fake.res("categories/907-1"), "debit_value": "10000.0"},
+            {"category": fake.res("categories/001"), "debit_value": "-10000.0"}
+        ]}})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.books_health_check(params(json!({"to_date": "2026-11-08"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        v["period"],
+        json!({"from": "2026-10-01", "to": "2026-11-08"})
+    );
+    assert_eq!(
+        fake.last("GET", "bills").param("from_date"),
+        Some("2026-10-01")
+    );
+    assert_eq!(v["possible_duplicate_bills"]["count"], 1);
+    assert_eq!(
+        v["possible_duplicate_bills"]["items"][0]["bill_ids"],
+        json!(["1", "2"])
+    );
+    assert_eq!(v["possible_duplicate_expenses"]["count"], 1);
+    assert_eq!(v["vat_on_items_without_vat"]["count"], 1);
+    assert_eq!(v["vat_on_items_without_vat"]["items"][0]["id"], "1");
+    let d = &v["director_payments_as_costs"];
+    assert_eq!(d["count"], 1, "a payment explained to the director is fine");
+    assert_eq!(d["items"][0]["id"], "1");
+    assert!(d["items"][0]["why"].as_str().unwrap().contains("Ann Leer"));
+    assert_eq!(v["large_bank_charges"]["count"], 1, "small fees are fine");
+    assert_eq!(v["corrections_booked_as_costs"]["items"][0]["id"], "2");
+    let j = &v["journals_to_check"]["items"][0];
+    assert_eq!(j["total"], "10000.00");
+    let why = j["why"].as_str().unwrap();
+    assert!(
+        why.contains("round amount") && why.contains("director's loan"),
+        "{why}"
+    );
+    assert_eq!(v["clean"], false);
+    assert_eq!(
+        v["findings"].as_array().unwrap().len(),
+        7,
+        "{}",
+        v["findings"]
+    );
+    assert!(v.get("unavailable").is_none(), "{v}");
+}
+
+#[tokio::test]
+async fn explanations_are_suggested_from_how_the_payee_was_explained_before() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "categories",
+        Canned::ok(json!({"admin_expenses_categories": [
+            {"url": fake.res("categories/285"), "description": "Computer Software", "nominal_code": "285"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "bank_accounts/1",
+        Canned::ok(json!({"bank_account": {"url": fake.res("bank_accounts/1"), "name": "Main"}})),
+    );
+    fake.on(
+        "GET",
+        "bank_transactions",
+        Canned::ok(json!({"bank_transactions": [
+            {"url": fake.res("bank_transactions/10"), "dated_on": "2026-11-02", "description": "CARD PAYMENT TO ADOBE SYSTEMS 4410", "amount": "-19.99", "unexplained_amount": "-19.99"},
+            {"url": fake.res("bank_transactions/11"), "dated_on": "2026-11-03", "description": "SOMEWHERE NEW", "amount": "-5.00", "unexplained_amount": "-5.00"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "bank_transaction_explanations",
+        Canned::ok(json!({"bank_transaction_explanations": [
+            {"description": "ADOBE SYSTEMS 1111", "category": fake.res("categories/285"), "sales_tax_rate": "20.0", "dated_on": "2026-08-02", "gross_value": "-19.99"},
+            {"description": "ADOBE SYSTEMS 2222", "category": fake.res("categories/285"), "sales_tax_rate": "20.0", "dated_on": "2026-09-02", "gross_value": "-19.99"},
+            {"description": "ADOBE SYSTEMS 3333", "category": fake.res("categories/285"), "sales_tax_rate": "20.0", "dated_on": "2026-10-02", "gross_value": "-19.99"},
+            {"description": "ADOBE SYSTEMS refund", "category": fake.res("categories/001"), "dated_on": "2026-10-05", "gross_value": "19.99"},
+            {"description": "SOMEWHERE NEW", "category": fake.res("categories/285"), "dated_on": "2026-10-05", "gross_value": "-5.00", "marked_for_review": true}
+        ]})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.suggest_explanations(params(json!({"bank_account_id": "1"})), auth())
+            .await
+            .unwrap(),
+    );
+    let l = fake.last("GET", "bank_transactions");
+    assert_eq!(l.param("view"), Some("unexplained"));
+    assert!(
+        l.param("bank_account")
+            .unwrap()
+            .ends_with("/bank_accounts/1")
+    );
+    assert_eq!(v["with_suggestion"], 1);
+    assert_eq!(v["without_history"], 1, "unapproved guesses do not count");
+    let t = &v["transactions"][0];
+    let sug = &t["suggestion"];
+    assert_eq!(
+        sug["confidence"], "high",
+        "money in is not mixed with money out"
+    );
+    assert_eq!(sug["category_name"], "Computer Software");
+    assert_eq!(
+        sug["explain_with"],
+        json!({"bank_transaction_id": "10", "category": "285", "sales_tax_rate": "20.0"})
+    );
+    assert!(v["transactions"][1].get("suggestion").is_none());
+}
+
+#[tokio::test]
+async fn explain_bank_transactions_carries_on_past_a_failure() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "bank_transactions/10",
+        Canned::ok(json!({"bank_transaction": {"url": fake.res("bank_transactions/10"), "dated_on": "2026-11-02", "description": "ADOBE", "amount": "-19.99", "unexplained_amount": "-19.99"}})),
+    );
+    fake.on(
+        "GET",
+        "bank_transactions/11",
+        Canned::status(404, json!({"errors": {"error": {"message": "not found"}}})),
+    );
+    fake.on(
+        "POST",
+        "bank_transaction_explanations",
+        Canned::ok(json!({"bank_transaction_explanation": {"url": fake.res("bank_transaction_explanations/55")}})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.explain_bank_transactions(
+            params(json!({"explanations": [
+                {"bank_transaction_id": "11", "category": "285"},
+                {"bank_transaction_id": "10", "category": "285", "sales_tax_rate": "20.0"}
+            ]})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["explained"], 1);
+    assert_eq!(v["failed"], 1);
+    assert_eq!(v["results"][0]["explanation_id"], "55");
+    assert!(
+        v["failures"][0]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("not_found")
+    );
+    let body = fake
+        .last("POST", "bank_transaction_explanations")
+        .body
+        .unwrap();
+    let e = &body["bank_transaction_explanation"];
+    assert_eq!(e["gross_value"], "-19.99");
+    assert!(e["category"].as_str().unwrap().ends_with("/categories/285"));
+    let r = s
+        .explain_bank_transactions(params(json!({"explanations": []})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).starts_with("validation"));
+}
+
+#[tokio::test]
+async fn a_receipt_is_matched_to_its_payment_expense_or_bill() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "bank_accounts",
+        Canned::ok(
+            json!({"bank_accounts": [{"url": fake.res("bank_accounts/1"), "name": "Main"}]}),
+        ),
+    );
+    fake.on(
+        "GET",
+        "bank_transactions",
+        Canned::ok(json!({"bank_transactions": [
+            {"url": fake.res("bank_transactions/1"), "dated_on": "2026-10-03", "description": "CARD PAYMENT TO SCREWFIX 22", "amount": "-42.50", "unexplained_amount": "-42.50"},
+            {"url": fake.res("bank_transactions/2"), "dated_on": "2026-10-02", "description": "B&Q", "amount": "-42.50", "unexplained_amount": "0.0",
+             "bank_transaction_explanations": [{"url": fake.res("bank_transaction_explanations/8"), "category": fake.res("categories/285")}]},
+            {"url": fake.res("bank_transactions/3"), "dated_on": "2026-10-02", "description": "OTHER", "amount": "-9.00", "unexplained_amount": "-9.00"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "expenses",
+        Canned::ok(json!({"expenses": [
+            {"url": fake.res("expenses/4"), "dated_on": "2026-10-04", "description": "Paint", "gross_value": "-42.50", "attachment": {"url": fake.res("attachments/1")}}
+        ]})),
+    );
+    fake.on("GET", "bills", Canned::ok(json!({"bills": []})));
+    let s = server(&fake);
+    let v = json(
+        &s.match_receipt(
+            params(json!({"amount": "42.50", "date": "2026-10-02", "supplier": "Screwfix Direct"})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(
+        v["looked_for"],
+        json!({"amount": "42.50", "from": "2026-09-27", "to": "2026-10-07"})
+    );
+    assert_eq!(
+        fake.last("GET", "bank_transactions").param("from_date"),
+        Some("2026-09-27")
+    );
+    assert_eq!(v["found"], 3);
+    let c = v["candidates"].as_array().unwrap();
+    assert_eq!(
+        c[0]["bank_transaction_id"], "1",
+        "the supplier's name wins over a day"
+    );
+    assert_eq!(
+        c[1]["attach_with"],
+        json!({"target": "bank_transaction_explanation", "id": "8"})
+    );
+    assert_eq!(
+        c[2]["kind"], "expense",
+        "one with a file already comes last"
+    );
+    assert_eq!(c[2]["already_has_a_file"], true);
+}
+
+#[tokio::test]
+async fn several_upload_links_are_made_for_a_pile_of_receipts() {
+    let fake = FakeFreeAgent::start().await;
+    let s = server(&fake);
+    let v = json(
+        &s.create_upload_link(params(json!({"count": 3})), auth())
+            .await
+            .unwrap(),
+    );
+    let links = v["upload_urls"].as_array().unwrap();
+    assert_eq!(links.len(), 3);
+    assert!(
+        links[0]
+            .as_str()
+            .unwrap()
+            .starts_with("https://books.example.com/")
+    );
+    assert_ne!(links[0], links[1]);
+    for bad in [
+        json!({"count": 11}),
+        json!({"count": 0}),
+        json!({"target": "bill", "id": "5", "count": 2}),
+    ] {
+        let r = s.create_upload_link(params(bad), auth()).await.unwrap();
+        assert!(error_text(&r).starts_with("validation"));
+    }
 }
 
 #[tokio::test]
