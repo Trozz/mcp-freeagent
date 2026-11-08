@@ -18,9 +18,9 @@ Help me close a month in FreeAgent.
 
 If no month is given above, use last month.
 
-1. For each bank account (`list_bank_accounts`), unexplained transactions dated in or before the month (`list_bank_transactions` view unexplained, to_date the month's last day) and guesses awaiting approval (view marked_for_review).
-2. Draft invoices dated in the month (`list_invoices` view draft) and unbilled time (`list_timeslips` view unbilled to the month's end).
-3. `get_trial_balance` from the accounting year's start to the month's end: report the 999 Suspense balance (it should be zero) and anything else that looks odd, such as a negative bank balance or a large director's loan.
+1. `month_end_check` with the month's first and last day: unexplained transactions and guesses to approve, expenses without receipts, bills without invoices, draft and overdue invoices, the 999 Suspense balance and overdrawn directors' loan accounts, with a to_do list.
+2. Unbilled time to the month's end (`list_timeslips` view unbilled).
+3. `get_trial_balance` from the accounting year's start to the month's end, for anything else that looks odd, such as a negative bank balance. If a director's loan account is overdrawn, `director_loan_review`.
 4. `get_profit_and_loss` for the month alone.
 5. Write: Ready to close (yes or no), What blocks closing (each with a next step), Checks passed, and the month's profit in two lines. Offer to fix the blocking items one by one, starting with the bank.
 

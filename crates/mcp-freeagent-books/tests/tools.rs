@@ -667,9 +667,17 @@ fn every_tool_has_a_description_and_the_right_hints() {
             .as_ref()
             .and_then(|a| a.read_only_hint)
             .unwrap_or(false);
-        let reads = ["get_", "list_", "search_", "business_snapshot", "api_get"]
-            .iter()
-            .any(|p| name.starts_with(p));
+        let reads = [
+            "get_",
+            "list_",
+            "search_",
+            "business_snapshot",
+            "api_get",
+            "month_end_check",
+            "director_loan_review",
+        ]
+        .iter()
+        .any(|p| name.starts_with(p));
         assert_eq!(read_only, reads, "{name}: read_only_hint");
         if name.starts_with("delete_") || name == "mark_tax_return" || name == "api_request" {
             assert_eq!(
@@ -1184,4 +1192,171 @@ async fn attach_file_takes_an_upload_or_base64_but_not_both() {
         .await
         .unwrap();
     assert!(error_text(&r).contains("together"), "{}", error_text(&r));
+}
+
+#[tokio::test]
+async fn the_month_end_check_lists_what_to_finish_before_the_vat_return() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "vat_returns",
+        Canned::ok(json!({"vat_returns": [
+            {"url": fake.res("vat_returns/2026-09-30"), "period_starts_on": "2026-07-01", "period_ends_on": "2026-09-30", "filing_status": "filed"},
+            {"url": fake.res("vat_returns/2026-12-31"), "period_starts_on": "2026-10-01", "period_ends_on": "2026-12-31", "filing_due_on": "2027-02-07", "filing_status": "unfiled"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "bank_accounts",
+        Canned::ok(json!({"bank_accounts": [
+            {"url": fake.res("bank_accounts/1"), "name": "Main", "unexplained_transaction_count": 0, "marked_for_review_count": 0},
+            {"url": fake.res("bank_accounts/2"), "name": "Photography", "unexplained_transaction_count": 8, "marked_for_review_count": 1},
+            {"url": fake.res("bank_accounts/3"), "name": "Old", "status": "hidden", "unexplained_transaction_count": 4}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "expenses",
+        Canned::ok(json!({"expenses": [
+            {"url": fake.res("expenses/1"), "dated_on": "2026-10-02", "description": "Lunch", "gross_value": "-12.00", "sales_tax_value": "-2.00"},
+            {"url": fake.res("expenses/2"), "dated_on": "2026-10-03", "description": "Train", "gross_value": "-40.00", "attachment": {"url": fake.res("attachments/9")}},
+            {"url": fake.res("expenses/3"), "dated_on": "2026-10-04", "description": "Leeds", "gross_value": "-11.25", "mileage": "25.0"}
+        ]})),
+    );
+    // Bills are read twice: dated in the period, then overdue.
+    fake.on_seq(
+        "GET",
+        "bills",
+        vec![
+            Canned::ok(json!({"bills": [
+                {"url": fake.res("bills/5"), "reference": "INV-1", "dated_on": "2026-10-09", "total_value": "120.0"},
+                {"url": fake.res("bills/6"), "reference": "INV-2", "dated_on": "2026-10-10", "total_value": "60.0", "attachment": {"url": fake.res("attachments/8")}}
+            ]})),
+            Canned::ok(json!({"bills": []})),
+        ],
+    );
+    // Invoices: drafts, then overdue.
+    fake.on_seq(
+        "GET",
+        "invoices",
+        vec![
+            Canned::ok(json!({"invoices": [
+                {"url": fake.res("invoices/1"), "reference": "036", "dated_on": "2024-01-27", "total_value": "3.49"},
+                {"url": fake.res("invoices/2"), "reference": "280", "dated_on": "2026-11-01", "total_value": "500.0"}
+            ]})),
+            Canned::ok(json!({"invoices": [{"url": fake.res("invoices/3"), "due_value": "179.76"}]})),
+        ],
+    );
+    fake.on(
+        "GET",
+        "accounting/trial_balance/summary",
+        Canned::ok(json!({"trial_balance_summary": [
+            {"nominal_code": "999", "display_nominal_code": "999", "name": "Suspense", "total": "12.50"},
+            {"nominal_code": "001", "name": "Sales", "total": "-100.0"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "accounting/balance_sheet",
+        Canned::ok(json!({"balance_sheet": {"current_assets": {"accounts": [
+            {"name": "Director Loan Account: Ann Lee", "nominal_code": "907-1", "total_debit_value": 1779}
+        ]}}})),
+    );
+    let s = server(&fake);
+    let v = json(&s.month_end_check(params(json!({})), auth()).await.unwrap());
+    assert_eq!(
+        v["period"],
+        json!({"from": "2026-10-01", "to": "2026-12-31", "basis": "the next VAT return"})
+    );
+    assert_eq!(v["vat_return"]["filing_due_on"], "2027-02-07");
+    let l = fake.last("GET", "expenses");
+    assert_eq!(l.param("from_date"), Some("2026-10-01"));
+    assert_eq!(l.param("to_date"), Some("2026-12-31"));
+    assert_eq!(v["bank_accounts_to_finish"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        v["expenses_without_receipts"]["count"], 1,
+        "mileage needs no receipt"
+    );
+    assert_eq!(
+        v["expenses_without_receipts"]["vat_reclaimed_without_receipt"],
+        "2.00"
+    );
+    assert_eq!(v["bills_without_invoice"]["count"], 1);
+    assert_eq!(v["draft_invoices"]["in_period"][0]["reference"], "280");
+    assert_eq!(v["draft_invoices"]["older_than_30_days"]["count"], 1);
+    assert_eq!(v["overdue_invoices"], json!({"count": 1, "due": "179.76"}));
+    assert_eq!(v["suspense"], "12.50");
+    assert_eq!(v["directors_loans_overdrawn"][0]["name"], "Ann Lee");
+    assert_eq!(v["ready"], false);
+    let todo = v["to_do"].to_string();
+    for want in [
+        "Explain 8 transaction(s) in Photography",
+        "Approve or correct 1 guessed explanation(s) in Photography",
+        "Add receipts to 1 expense(s), which reclaim 2.00 of VAT",
+        "Attach the supplier's invoice to 1 bill(s)",
+        "Chase 1 overdue invoice(s), 179.76 in all",
+        "Clear 12.50 from 999 Suspense",
+        "director_loan_review",
+    ] {
+        assert!(todo.contains(want), "missing {want:?} in {todo}");
+    }
+    assert!(v.get("unavailable").is_none(), "{v}");
+    assert!(
+        fake.api_log().iter().all(|l| l.method == "GET"),
+        "a check changes nothing"
+    );
+}
+
+#[tokio::test]
+async fn the_director_loan_review_estimates_s455_on_what_was_still_owed() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "company",
+        Canned::ok(json!({"company": {"url": fake.res("company"), "sales_tax_registration_status": "Registered", "annual_accounting_periods": [
+            {"starts_on": "2025-01-01", "ends_on": "2025-12-31"},
+            {"starts_on": "2026-01-01", "ends_on": "2026-12-31"}
+        ]}})),
+    );
+    let sheet = |loan: i64, expenses: i64| {
+        Canned::ok(json!({"balance_sheet": {
+            "current_assets": {"accounts": [{"name": "Director Loan Account: Ann Lee", "nominal_code": "907-1", "total_debit_value": loan}]},
+            "current_liabilities": {"accounts": [{"name": "Expense Account: Ann Lee", "nominal_code": "905-1", "total_debit_value": expenses}]}
+        }}))
+    };
+    // Read today, then at the year end, then at the s455 deadline.
+    fake.on_seq(
+        "GET",
+        "accounting/balance_sheet",
+        vec![sheet(1779, -2301), sheet(11142, -8064), sheet(1779, -900)],
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.director_loan_review(params(json!({"as_at_date": "2026-11-08"})), auth())
+            .await
+            .unwrap(),
+    );
+    let dates: Vec<String> = fake
+        .api_log()
+        .into_iter()
+        .filter(|l| l.path == "/v2/accounting/balance_sheet")
+        .filter_map(|l| l.param("as_at_date").map(String::from))
+        .collect();
+    assert_eq!(dates, ["2026-11-08", "2025-12-31", "2026-09-30"]);
+    let d = &v["directors"][0];
+    assert_eq!(d["name"], "Ann Lee");
+    assert_eq!(d["loan_account"], "1779.00");
+    assert_eq!(d["loan_position"], "owes the company");
+    assert_eq!(d["expenses_owed_to_them"], "2301.00");
+    assert_eq!(d["net"], "-522.00");
+    assert_eq!(d["net_position"], "owed by the company");
+    assert_eq!(d["at_year_end"]["loan_account"], "11142.00");
+    assert_eq!(
+        d["s455"],
+        json!({"year_end": "2025-12-31", "repay_by": "2026-09-30", "deadline_passed": true, "owed_at_year_end": "11142.00", "still_owed": "1779.00", "estimated_charge": "600.41"})
+    );
+    let flags = d["flags"].to_string();
+    assert!(flags.contains("s455 tax of about 600.41 is due"), "{flags}");
+    assert!(flags.contains("set against the loan"), "{flags}");
+    assert!(!flags.contains("benefit in kind"), "{flags}");
 }
