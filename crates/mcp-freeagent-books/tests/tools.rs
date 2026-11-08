@@ -1077,3 +1077,111 @@ async fn mileage_is_claimed_under_the_mileage_category() {
     let body = fake.last("POST", "expenses").body.unwrap();
     assert_eq!(body["expense"]["category"], fake.res("categories/249"));
 }
+
+#[tokio::test]
+async fn attachments_are_read_from_their_signed_link_without_a_token() {
+    use base64::Engine as _;
+    let fake = FakeFreeAgent::start().await;
+    let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3];
+    let link = fake.file("receipt.jpg", jpeg.clone());
+    fake.on(
+        "GET",
+        "attachments/9",
+        Canned::ok(json!({"attachment": {"url": fake.res("attachments/9"), "content_src": link, "content_type": "image/jpeg", "file_name": "receipt.jpg"}})),
+    );
+    let pdf = b"%PDF-1.4 receipt".to_vec();
+    let pdf_link = fake.file("bill.pdf", pdf.clone());
+    fake.on(
+        "GET",
+        "attachments/10",
+        Canned::ok(json!({"attachment": {"url": fake.res("attachments/10"), "content_src": pdf_link, "content_type": "application/x-pdf", "file_name": "bill.pdf"}})),
+    );
+    fake.on(
+        "GET",
+        "attachments/11",
+        Canned::ok(json!({"attachment": {"url": fake.res("attachments/11"), "content_src": "http://files.example.net/x.jpg", "content_type": "image/jpeg"}})),
+    );
+    let s = server(&fake);
+
+    let r = serde_json::to_value(
+        s.get_attachment(params(json!({"id": fake.res("attachments/9")})), auth())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(r["content"][1]["type"], "image", "{r}");
+    assert_eq!(r["content"][1]["mimeType"], "image/jpeg");
+    assert_eq!(
+        r["content"][1]["data"],
+        base64::engine::general_purpose::STANDARD.encode(&jpeg)
+    );
+    let got = fake
+        .api_log()
+        .into_iter()
+        .find(|l| l.path == "/files/receipt.jpg")
+        .expect("the file was downloaded");
+    assert!(
+        got.authorization.is_none(),
+        "no FreeAgent token goes to the storage link"
+    );
+
+    // A PDF comes as an embedded file, typed as everyone else spells it.
+    let r = serde_json::to_value(
+        s.get_attachment(params(json!({"id": "10"})), auth())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(r["content"][1]["type"], "resource", "{r}");
+    assert_eq!(r["content"][1]["resource"]["mimeType"], "application/pdf");
+    assert_eq!(
+        r["content"][1]["resource"]["blob"],
+        base64::engine::general_purpose::STANDARD.encode(&pdf)
+    );
+
+    // Links anywhere but FreeAgent's storage (or the API itself) are not followed.
+    let r = s
+        .get_attachment(params(json!({"id": "11"})), auth())
+        .await
+        .unwrap();
+    assert!(
+        error_text(&r).contains("unexpected host"),
+        "{}",
+        error_text(&r)
+    );
+    assert!(fake.api_log().iter().all(|l| !l.path.contains("x.jpg")));
+}
+
+#[tokio::test]
+async fn attach_file_takes_an_upload_or_base64_but_not_both() {
+    let fake = FakeFreeAgent::start().await;
+    let s = server(&fake);
+    for args in [
+        json!({"target": "expense", "id": "5"}),
+        json!({"target": "expense", "id": "5", "upload_url": "https://books.example.com/upload/AAAAAAAAAAAAAAAAAAAAAA", "file_name": "r.pdf", "data_base64": "JVBERg=="}),
+    ] {
+        let r = s.attach_file(params(args), auth()).await.unwrap();
+        assert!(
+            error_text(&r).starts_with("validation:"),
+            "{}",
+            error_text(&r)
+        );
+    }
+    let r = s
+        .attach_file(
+            params(json!({"target": "expense", "id": "5", "upload_url": "https://books.example.com/upload/AAAAAAAAAAAAAAAAAAAAAA"})),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        error_text(&r).starts_with("not_found:"),
+        "{}",
+        error_text(&r)
+    );
+    let r = s
+        .create_upload_link(params(json!({"target": "expense"})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).contains("together"), "{}", error_text(&r));
+}

@@ -44,7 +44,7 @@ Start with get_company (company, VAT status, accounting year) and business_snaps
 Lists are paged: pass next_page as page for more. search_contacts finds customers and suppliers by name or email; list_categories finds the nominal code for an income or expense. \
 Sales: create_invoice makes a draft; invoice_action marks it sent, cancels it or duplicates it; send_document_email emails invoices, estimates and credit notes. Purchases: create_bill, create_expense, create_mileage_claim. \
 Banking: list_bank_transactions with view unexplained shows what needs explaining; explain_bank_transaction categorises one, or matches it to an invoice, bill, transfer or user; approve_explanations confirms FreeAgent's guesses. \
-Attach receipts and invoices with create_upload_link: it gives the person a link to pick the file, because files shared in the chat cannot be passed to tools. \
+Receipts and invoices: files shared in the chat cannot be passed to tools, so create_upload_link gives the person a link to send the file; without a target the file is held for you to read with get_uploaded_file, fill in the expense, bill or explanation from, and attach with attach_file. get_attachment reads a file already in FreeAgent. \
 Bank money out is negative and money in positive. Expenses: a cost the claimant paid is negative. \
 Reports: get_profit_and_loss, get_balance_sheet, get_trial_balance, get_cashflow; tax: list_tax_returns, get_tax_return. api_get and api_request reach any other FreeAgent endpoint. \
 Before creating, changing, sending or deleting anything, show the person what will be done and get their agreement. \

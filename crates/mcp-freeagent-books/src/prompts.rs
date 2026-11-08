@@ -157,11 +157,11 @@ pub const PROMPTS: &[PromptSpec] = &[
     PromptSpec {
         name: "record_expense",
         title: "Record an expense or bill",
-        description: "Record a receipt or supplier invoice: from the details (or an attached receipt) works out whether it is an out-of-pocket expense, a bill to pay, or a bank payment to explain, picks the category and VAT, and records it after you approve.",
+        description: "Record a receipt or supplier invoice: reads the receipt you send (or the details you give), works out whether it is an out-of-pocket expense, a bill to pay, or a bank payment to explain, picks the category and VAT, records it after you approve, and attaches the receipt.",
         arguments: &[arg(
             "details",
-            "What it was, who from, when, the amount and VAT, and how it was paid (personal card, company card, unpaid).",
-            true,
+            "What it was, who from, when, the amount and VAT, and how it was paid (personal card, company card, unpaid). Leave out to start from the receipt.",
+            false,
         )],
         render: record_expense,
     },
@@ -338,8 +338,9 @@ fn log_time(p: &str, a: &Args) -> String {
 
 fn record_expense(p: &str, a: &Args) -> String {
     format!(
-        "Record this receipt or supplier invoice in FreeAgent. If I attached a receipt or invoice, read the supplier, date, amounts and VAT from it.\n\n\
+        "Record this receipt or supplier invoice in FreeAgent.\n\n\
 <details>{}</details>\n\n\
+0. Start from the receipt or invoice if there is one. If I attached it in this chat, read it here. Otherwise call `{p}create_upload_link` with no target, give me the upload_url to open on my phone or computer, and wait until I say it is sent; then read it with `{p}get_uploaded_file`. Take the supplier, date, total, VAT and the supplier's VAT number from it, and tell me what you could not read.\n\
 1. Decide how it belongs in the books, and say why:\n\
    - paid personally by me or an employee and owed back: an expense with `{p}create_expense` (amount is what was spent, positive);\n\
    - mileage: `{p}create_mileage_claim`;\n\
@@ -349,7 +350,7 @@ fn record_expense(p: &str, a: &Args) -> String {
 2. Pick the category with `{p}list_categories` and a query. Work out the VAT: check `{p}get_company` for VAT registration; VAT is reclaimable only with a VAT receipt from a VAT-registered supplier.\n\
 3. Show me: what will be recorded, the category with its nominal code, date, gross amount, VAT and description.\n\
 4. When I agree, record it and show the result.\n\
-5. Attach the receipt or invoice: call `{p}create_upload_link` with the expense, bill or bank transaction explanation you recorded and give me the upload_url to open and pick the file (you cannot pass a file shared in the chat to a tool yourself). When I say it is done, check with `{p}get_upload_status`. If you can read the file yourself, for example from a path with a shell, use `{p}attach_file` for files up to about 700 KB instead.\n\n{}",
+5. Attach the receipt or invoice. If it came through an upload link, call `{p}attach_file` with the item you recorded and that upload_url. Otherwise call `{p}create_upload_link` with the expense, bill or bank transaction explanation you recorded and give me the upload_url to open and pick the file (you cannot pass a file shared in the chat to a tool yourself); when I say it is done, check with `{p}get_upload_status`. If you can read the file yourself, for example from a path with a shell, `{p}attach_file` with data_base64 takes files up to about 700 KB.\n\n{}",
         a.get("details"),
         footer(true)
     )
