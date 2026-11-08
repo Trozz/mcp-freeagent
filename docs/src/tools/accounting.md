@@ -63,3 +63,10 @@ Journals are tagged `mcp-freeagent` unless another `tag` is given, so `list_jour
 
 - `year` is the tax year by the year it ends: `2026` for April 2025 to April 2026.
 - `period` is a pay period, `0` to `11`. Leave it out for the year's periods and payments.
+
+## Reviews
+
+| Tool | Kind | What it does | Key parameters |
+|---|---|---|---|
+| `month_end_check` | read | What to finish before a month end or VAT return, with a `to_do` list: unexplained transactions and guesses to approve per bank account, expenses without receipts and the VAT they reclaim (mileage needs none), bills without the supplier's invoice, draft invoices in the period or over 30 days old, overdue invoices and bills, the `999` Suspense balance and overdrawn directors' loan accounts. Default period: the next VAT return's, or last month for a company not registered for VAT | `from_date` and `to_date`, or neither |
+| `director_loan_review` | read | Each director's loan account (positive: they owe the company), the expenses and salary the company owes them, and the net; the loan at the last year end, the s455 deadline nine months later, what was still owed then and the estimated s455 tax at 33.75%; a flag for loans over £10,000 (benefit in kind); and a set-off suggestion when expenses are owed to them. Figures are the balance sheet's, to the nearest pound | `as_at_date` (default today) |
