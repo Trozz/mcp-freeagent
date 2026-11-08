@@ -612,6 +612,324 @@ async fn the_raw_tools_stay_on_the_api() {
 }
 
 #[tokio::test]
+async fn categories_are_read_once_and_forgotten_after_a_raw_write_to_them() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "categories",
+        Canned::ok(json!({"admin_expenses_categories": [
+            {"url": fake.res("categories/285"), "description": "Accommodation and Meals", "nominal_code": "285"}
+        ]})),
+    );
+    fake.on(
+        "POST",
+        "categories",
+        Canned::ok(json!({"category": {"url": fake.res("categories/286")}})),
+    );
+    let s = server(&fake);
+    let reads = || {
+        fake.api_log()
+            .iter()
+            .filter(|l| l.method == "GET" && l.path == "/v2/categories")
+            .count()
+    };
+    for _ in 0..3 {
+        json(&s.list_categories(params(json!({})), auth()).await.unwrap());
+    }
+    assert_eq!(reads(), 1, "read once, then from the cache");
+    json(
+        &s.list_categories(params(json!({"sub_accounts": true})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(reads(), 2, "sub-accounts are a different list");
+    json(
+        &s.api_request(
+            params(json!({"method": "POST", "path": "categories", "body": {"category": {"description": "New"}}})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    json(&s.list_categories(params(json!({})), auth()).await.unwrap());
+    assert_eq!(reads(), 3, "read again after a write to categories");
+}
+
+#[tokio::test]
+async fn a_read_refused_for_a_moment_is_sent_again_but_a_write_is_not() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on_seq(
+        "GET",
+        "capital_assets",
+        vec![
+            Canned::status(429, Value::Null).header("retry-after", "0"),
+            Canned::ok(json!({"capital_assets": [{"url": fake.res("capital_assets/1")}]})),
+        ],
+    );
+    fake.on(
+        "PUT",
+        "account_locks",
+        Canned::status(429, Value::Null).header("retry-after", "0"),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.list_capital_assets(params(json!({})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["items"][0]["id"], "1");
+    let r = s
+        .api_request(
+            params(json!({"method": "PUT", "path": "account_locks", "body": {"account_lock": {}}})),
+            auth(),
+        )
+        .await
+        .unwrap();
+    assert!(error_text(&r).starts_with("rate_limited"));
+    let puts = fake.api_log().iter().filter(|l| l.method == "PUT").count();
+    assert_eq!(puts, 1, "writes are never sent twice");
+}
+
+#[tokio::test]
+async fn capital_assets_and_recurring_invoices_are_read_with_their_details() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "capital_assets",
+        Canned::ok(json!({"capital_assets": [{"url": fake.res("capital_assets/2"), "description": "Camera"}]})),
+    );
+    fake.on(
+        "GET",
+        "capital_assets/2",
+        Canned::ok(json!({"capital_asset": {"url": fake.res("capital_assets/2"), "capital_asset_history": [{"type": "purchase", "link": fake.res("bills/9")}]}})),
+    );
+    fake.on(
+        "GET",
+        "capital_asset_types",
+        Canned::ok(json!({"capital_asset_types": [{"url": fake.res("capital_asset_types/397"), "name": "Computer Equipment", "system_default": true}]})),
+    );
+    fake.on(
+        "GET",
+        "recurring_invoices/5",
+        Canned::ok(json!({"recurring_invoice": {"url": fake.res("recurring_invoices/5"), "frequency": "Monthly", "invoice_items": [{"url": fake.res("invoice_items/1")}]}})),
+    );
+    let s = server(&fake);
+    json(
+        &s.list_capital_assets(
+            params(json!({"view": "disposable", "include_history": true})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    let l = fake.last("GET", "capital_assets");
+    assert_eq!(l.param("view"), Some("disposable"));
+    assert_eq!(l.param("include_history"), Some("true"));
+    let v = json(
+        &s.get_capital_asset(params(json!({"id": "2"})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["capital_asset_history"][0]["type"], "purchase");
+    assert_eq!(
+        fake.last("GET", "capital_assets/2")
+            .param("include_history"),
+        Some("true")
+    );
+    let v = json(&s.list_capital_asset_types(auth()).await.unwrap());
+    assert_eq!(v["capital_asset_types"][0]["id"], "397");
+    let v = json(
+        &s.get_recurring_invoice(
+            params(json!({"id": fake.res("recurring_invoices/5")})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["frequency"], "Monthly");
+    assert_eq!(v["invoice_items"][0]["id"], "1");
+}
+
+#[tokio::test]
+async fn the_asset_check_finds_equipment_booked_as_everyday_costs() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "capital_assets",
+        Canned::ok(json!({"capital_assets": [
+            {"url": fake.res("capital_assets/1"), "description": "Old laptop", "purchased_on": "2023-05-01", "asset_life_years": 0},
+            {"url": fake.res("capital_assets/2"), "description": "Desk", "depreciation_profile": {"method": "straight_line", "asset_life_years": 5}},
+            {"url": fake.res("capital_assets/3"), "description": "Sold van", "disposed_on": "2025-01-01", "asset_life_years": 0}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "categories",
+        Canned::ok(json!({
+            "admin_expenses_categories": [
+                {"url": fake.res("categories/285"), "description": "Accommodation and Meals", "nominal_code": "285"},
+                {"url": fake.res("categories/359"), "description": "Sundries", "nominal_code": "359"}
+            ],
+            "general_categories": [{"url": fake.res("categories/602"), "description": "Computer Equipment Purchase", "nominal_code": "602"}]
+        })),
+    );
+    fake.on(
+        "GET",
+        "bills",
+        Canned::ok(json!({"bills": [
+            {"url": fake.res("bills/1"), "contact_name": "Apple", "dated_on": "2026-06-01", "bill_items": [
+                {"description": "MacBook Pro", "category": fake.res("categories/359"), "total_value": "2399.00"},
+                {"description": "USB cable", "category": fake.res("categories/359"), "total_value": "19.00"}
+            ]},
+            {"url": fake.res("bills/2"), "contact_name": "Apple", "dated_on": "2026-06-02", "bill_items": [
+                {"description": "MacBook Air", "category": fake.res("categories/602"), "total_value": "1199.00"}
+            ]},
+            {"url": fake.res("bills/3"), "contact_name": "Hotel", "dated_on": "2026-06-03", "bill_items": [
+                {"description": "Conference hotel", "category": fake.res("categories/285"), "total_value": "900.00"}
+            ]}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "expenses",
+        Canned::ok(json!({"expenses": [
+            {"url": fake.res("expenses/4"), "dated_on": "2026-07-01", "description": "Camera body", "category": fake.res("categories/359"), "gross_value": "-750.00"},
+            {"url": fake.res("expenses/5"), "dated_on": "2026-07-02", "description": "Camera lens", "category": fake.res("categories/359"), "gross_value": "-650.00", "capital_asset": fake.res("capital_assets/9")}
+        ]})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.asset_register_check(
+            params(json!({"from_date": "2026-04-01", "to_date": "2027-03-31"})),
+            auth(),
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["period"]["threshold"], "500.00");
+    assert_eq!(v["register"]["held"], 2);
+    assert_eq!(v["register"]["disposed"], 1);
+    assert_eq!(v["register"]["without_depreciation"][0]["id"], "1");
+    let found = v["possible_assets"]["items"].as_array().unwrap();
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found[0]["description"], "MacBook Pro");
+    assert_eq!(found[0]["category_name"], "Sundries");
+    assert_eq!(found[1]["id"], "4");
+    assert_eq!(found[1]["value"], "750.00");
+    assert_eq!(
+        fake.last("GET", "bills").param("nested_bill_items"),
+        Some("true")
+    );
+    assert_eq!(v["ready"], false);
+}
+
+#[tokio::test]
+async fn the_chase_plan_groups_overdue_invoices_by_customer_with_a_draft() {
+    let fake = FakeFreeAgent::start().await;
+    let ago = |d: i64| {
+        (chrono::Local::now().date_naive() - chrono::Duration::days(d))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    fake.on(
+        "GET",
+        "invoices",
+        Canned::ok(json!({"invoices": [
+            {"url": fake.res("invoices/1"), "reference": "036", "contact": fake.res("contacts/2"), "contact_name": "Acme Ltd", "due_on": ago(45), "due_value": "349.00", "currency": "GBP"},
+            {"url": fake.res("invoices/2"), "reference": "041", "contact": fake.res("contacts/2"), "contact_name": "Acme Ltd", "due_on": ago(5), "due_value": "120.00", "currency": "GBP"},
+            {"url": fake.res("invoices/3"), "reference": "050", "contact": fake.res("contacts/3"), "contact_name": "Bee Co", "due_on": ago(3), "due_value": "80.00", "currency": "GBP"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "invoices/timeline",
+        Canned::ok(json!({"invoice_timeline_items": [
+            {"reference": "036", "summary": "Email: 036 sent to accounts@acme.example", "dated_on": "2026-10-01"},
+            {"reference": "036", "summary": "Payment: 036: £10.00 received", "dated_on": "2026-10-20"}
+        ]})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.overdue_chase_plan(params(json!({})), auth())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(fake.last("GET", "invoices").param("view"), Some("overdue"));
+    let customers = v["customers"].as_array().unwrap();
+    assert_eq!(customers.len(), 2);
+    let acme = &customers[0];
+    assert_eq!(acme["contact_name"], "Acme Ltd");
+    assert_eq!(acme["total_due"], "469.00");
+    assert_eq!(acme["oldest_days_overdue"], 45);
+    assert_eq!(acme["stage"], "final");
+    assert_eq!(acme["last_emailed"], "2026-10-01");
+    assert_eq!(acme["invoices"][0]["reference"], "036");
+    assert_eq!(
+        acme["draft"]["subject"],
+        "Final reminder: invoices 036, 041"
+    );
+    assert!(
+        acme["draft"]["body"]
+            .as_str()
+            .unwrap()
+            .ends_with("Lee Consulting Ltd")
+    );
+    assert_eq!(customers[1]["stage"], "friendly");
+    assert_eq!(v["totals_by_currency"]["GBP"], "549.00");
+}
+
+#[tokio::test]
+async fn the_mileage_tracker_counts_business_miles_in_the_tax_year() {
+    let fake = FakeFreeAgent::start().await;
+    fake.on(
+        "GET",
+        "expenses",
+        Canned::ok(json!({"expenses": [
+            {"url": fake.res("expenses/1"), "user": fake.res("users/7"), "dated_on": "2025-05-01", "description": "Client visits", "mileage": "9900.0", "vehicle_type": "Car", "reclaim_mileage": 1, "gross_value": "-4455.00"},
+            {"url": fake.res("expenses/2"), "user": fake.res("users/7"), "dated_on": "2025-12-01", "description": "Leeds", "mileage": "200.0", "vehicle_type": "Car", "reclaim_mileage": 1, "gross_value": "-90.00"},
+            {"url": fake.res("expenses/3"), "user": fake.res("users/7"), "dated_on": "2025-06-01", "description": "Lunch", "gross_value": "-12.00"},
+            {"url": fake.res("expenses/4"), "user": fake.res("users/8"), "dated_on": "2025-06-01", "description": "Bank", "mileage": "10", "vehicle_type": "Bicycle", "reclaim_mileage": 1, "gross_value": "-2.00"}
+        ]})),
+    );
+    fake.on(
+        "GET",
+        "users",
+        Canned::ok(json!({"users": [
+            {"url": fake.res("users/7"), "first_name": "Ann", "last_name": "Lee"},
+            {"url": fake.res("users/8"), "first_name": "Bob", "last_name": "Hay"}
+        ]})),
+    );
+    let s = server(&fake);
+    let v = json(
+        &s.mileage_tracker(params(json!({"tax_year": "2025/26"})), auth())
+            .await
+            .unwrap(),
+    );
+    let l = fake.last("GET", "expenses");
+    assert_eq!(l.param("from_date"), Some("2025-04-06"));
+    assert_eq!(l.param("to_date"), Some("2026-04-05"));
+    assert_eq!(v["tax_year"], "2025/26");
+    let ann = &v["people"][0];
+    assert_eq!(ann["name"], "Ann Lee");
+    assert_eq!(ann["car"]["miles"], "10100");
+    assert_eq!(ann["car"]["miles_at_25p"], "100");
+    assert_eq!(ann["car"]["miles_left_at_45p"], "0");
+    // 100 miles at 45p and 100 at 25p is 70.00, not the 90.00 claimed.
+    assert_eq!(ann["car"]["approved_amount"], "4525.00");
+    let flags = ann["flags"].as_array().unwrap();
+    assert!(flags[0].as_str().unwrap().contains("passed 10,000"));
+    assert!(flags[1].as_str().unwrap().contains("the extra 20.00"));
+    let bob = &v["people"][1];
+    assert_eq!(bob["bicycle"]["approved_amount"], "2.00");
+    assert!(bob.get("flags").is_none());
+    let r = s
+        .mileage_tracker(params(json!({"tax_year": "next"})), auth())
+        .await
+        .unwrap();
+    assert!(error_text(&r).starts_with("validation"));
+}
+
+#[tokio::test]
 async fn log_time_defaults_to_the_tasks_project_and_the_signed_in_user() {
     let fake = FakeFreeAgent::start().await;
     fake.on(
@@ -671,6 +989,9 @@ fn every_tool_has_a_description_and_the_right_hints() {
             "get_",
             "list_",
             "search_",
+            "asset_register_check",
+            "overdue_chase_plan",
+            "mileage_tracker",
             "business_snapshot",
             "api_get",
             "month_end_check",

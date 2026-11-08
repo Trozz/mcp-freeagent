@@ -13,6 +13,8 @@ Invoices, estimates and credit notes, and sending them. Conventions for ids, mon
 | `delete_invoice` | write, destructive | Delete a draft invoice. Sent invoices are refused: cancel them with `invoice_action` `mark_as_cancelled`, or issue a credit note | `id` |
 | `invoice_action` | write, destructive | Move an invoice through its life (below) | `id`, `action` |
 | `list_recurring_invoices` | read | Recurring invoice profiles FreeAgent invoices from on a schedule, with frequency, `next_recurs_on` and status | `contact_id`, `view`: `draft`, `active` or `inactive` (default all) |
+| `get_recurring_invoice` | read | One recurring invoice profile in full, with its line items. FreeAgent's API can only read recurring invoices: create and change them in FreeAgent | `id` |
+| `overdue_chase_plan` | read | Overdue invoices grouped by customer, longest overdue first: days overdue, amount due, when FreeAgent last emailed each (from its invoice timeline), the total, a reminder stage from the oldest invoice (`friendly` up to 7 days, `firm` up to 30, `final` after) and a drafted subject and body. Sends nothing: send an agreed draft with `send_document_email` | `contact_id` |
 
 `list_invoices` `view`: `all` (default), `recent_open_or_overdue`, `open`, `overdue`, `open_or_overdue`, `draft`, `paid`, `scheduled_to_email`, `thank_you_emails`, `reminder_emails`, or `last_N_months` such as `last_3_months`. `open_or_overdue` shows what customers owe. `sort` is `created_at` (default) or `updated_at`, prefixed `-` for newest first.
 

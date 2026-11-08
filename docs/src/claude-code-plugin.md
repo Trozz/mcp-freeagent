@@ -1,6 +1,6 @@
 # Claude Code plugin
 
-The repository is also a Claude Code plugin marketplace. Its `freeagent` plugin adds the server's MCP connection and the 14 [prompts](prompts.md) as slash commands.
+The repository is also a Claude Code plugin marketplace. Its `freeagent` plugin adds the server's MCP connection and the 15 [prompts](prompts.md) as slash commands.
 
 ## Install
 
@@ -30,6 +30,7 @@ Each prompt is a command named after it, with `-` for `_`:
 | `/freeagent:explain-transactions [bank_account] [period]` | `explain_transactions` |
 | `/freeagent:approve-guesses [bank_account]` | `approve_guesses` |
 | `/freeagent:chase-overdue [tone] [customer]` | `chase_overdue` |
+| `/freeagent:mileage-check [tax_year]` | `mileage_check` |
 | `/freeagent:create-invoice <request>` | `create_invoice` |
 | `/freeagent:invoice-unbilled-time [client]` | `invoice_unbilled_time` |
 | `/freeagent:log-time <work>` | `log_time` |

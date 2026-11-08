@@ -1,10 +1,12 @@
 //! Thin client for the FreeAgent API v2: the caller's access token (from [`crate::oauth::Tokens`]),
 //! no redirects, timeouts, one retry of reads after a transport error or a 5xx, one retry with a
-//! fresh access token after a 401, status mapping, paging headers and metrics. Writes are never
+//! fresh access token after a 401, one retry of reads after a short 429, a per-person throttle
+//! under FreeAgent's rate limit, status mapping, paging headers and metrics. Writes are never
 //! retried after they reach FreeAgent, so a slow create cannot run twice.
 
 use crate::error::{FaError, Result};
 use crate::oauth::Tokens;
+use crate::throttle::{REQUESTS_PER_MINUTE, Throttle};
 use mcp_server_core::credential::Credential;
 use mcp_server_core::observability::content_logging_enabled;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
@@ -23,6 +25,8 @@ const MAX_ERROR_DETAIL: usize = 400;
 /// Largest attachment file downloaded. FreeAgent takes uploads of up to 5 MB; older files can be
 /// a little larger.
 pub const MAX_DOWNLOAD_BYTES: usize = 10 * 1024 * 1024;
+/// A read refused with a 429 is sent again once when FreeAgent asks to wait at most this long.
+pub const MAX_RATE_LIMIT_WAIT_SECS: u64 = 10;
 /// Longest raw API path accepted.
 const MAX_PATH_CHARS: usize = 200;
 
@@ -34,6 +38,8 @@ pub struct ApiSettings {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
     pub retry_delay: Duration,
+    /// Requests a minute each person may send before requests wait; 0 for no throttle.
+    pub requests_per_minute: u32,
     /// Always log response bodies at debug level. Without it, bodies are logged only while
     /// `DEBUG_UNSAFE_LOG_CONTENT` is on.
     pub log_bodies: bool,
@@ -47,6 +53,7 @@ impl ApiSettings {
             connect_timeout: CONNECT_TIMEOUT,
             request_timeout: REQUEST_TIMEOUT,
             retry_delay: RETRY_DELAY,
+            requests_per_minute: REQUESTS_PER_MINUTE,
             log_bodies: false,
         }
     }
@@ -84,6 +91,7 @@ pub struct FaClient {
     http: reqwest::Client,
     settings: ApiSettings,
     tokens: Tokens,
+    throttle: Throttle,
 }
 
 fn status_class(status: Option<StatusCode>) -> &'static str {
@@ -193,6 +201,7 @@ impl FaClient {
     pub fn new(http: reqwest::Client, settings: ApiSettings, tokens: Tokens) -> Self {
         FaClient {
             http,
+            throttle: Throttle::new(settings.requests_per_minute),
             settings,
             tokens,
         }
@@ -384,9 +393,11 @@ impl FaClient {
         let path = url.path().to_string();
         let retryable = method == Method::GET;
         let mut retried = false;
+        let mut rate_retried = false;
         let mut reauthorised = false;
         loop {
             let token = self.tokens.access_token(key).await?;
+            self.throttle.acquire(key.fingerprint()).await;
             let started = Instant::now();
             let mut request = self
                 .http
@@ -461,6 +472,16 @@ impl FaClient {
             if !status.is_success() {
                 if status == StatusCode::TOO_MANY_REQUESTS {
                     metrics::counter!("freeagent_rate_limited_total").increment(1);
+                    // A short wait is cheaper than failing a review halfway through.
+                    if let Some(secs) = retry_after_secs.filter(|s| *s <= MAX_RATE_LIMIT_WAIT_SECS)
+                        && retryable
+                        && !rate_retried
+                    {
+                        tracing::debug!(endpoint, secs, "rate limited; retrying");
+                        rate_retried = true;
+                        tokio::time::sleep(Duration::from_secs(secs)).await;
+                        continue;
+                    }
                 }
                 return Err(map_status(&method, &path, status, &text, retry_after_secs));
             }

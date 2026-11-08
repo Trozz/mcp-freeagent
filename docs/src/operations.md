@@ -23,6 +23,7 @@
 | `mcp_tool_calls_total`, `mcp_tool_duration_seconds` | Tool calls by tool and outcome, and their duration |
 | `freeagent_requests_total`, `freeagent_request_duration_seconds` | FreeAgent API requests by endpoint label and status class, and their duration |
 | `freeagent_rate_limited_total` | API requests FreeAgent refused with 429 |
+| `freeagent_throttled_total` | Times a request waited because its person had sent 110 in the last minute |
 | `freeagent_token_requests_total` | Requests to FreeAgent's token endpoint by grant (`authorization_code` or `refresh_token`) and HTTP status |
 | `freeagent_refresh_token_rotations_total` | Refreshes where FreeAgent handed out a new refresh token |
 | `freeagent_token_store_errors_total` | Failed writes of `FREEAGENT_TOKEN_STORE` |

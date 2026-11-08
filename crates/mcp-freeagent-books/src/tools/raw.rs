@@ -164,6 +164,9 @@ impl BooksServer {
             let a = c
                 .send(method, "api_request", &segs, &q, p.body.as_ref())
                 .await?;
+            if segs.first() == Some(&"categories") {
+                self.categories.forget(c.credential().fingerprint());
+            }
             let mut out = json!({"body": view::resource(&a.body)});
             if let Some(l) = a.location {
                 out["location"] = Value::from(l);

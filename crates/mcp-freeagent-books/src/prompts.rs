@@ -122,6 +122,17 @@ pub const PROMPTS: &[PromptSpec] = &[
         render: chase_overdue,
     },
     PromptSpec {
+        name: "mileage_check",
+        title: "Mileage check",
+        description: "Check business mileage claimed this tax year against HMRC's approved rates: miles per person, how many are left at 45p before the 10,000-mile threshold, and any claims paid above the approved rate, with the corrections to make.",
+        arguments: &[arg(
+            "tax_year",
+            "The tax year, e.g. 2026/27. Default: the current one.",
+            false,
+        )],
+        render: mileage_check,
+    },
+    PromptSpec {
         name: "create_invoice",
         title: "Raise an invoice",
         description: "Raise an invoice from a plain description, e.g. \"Acme, 3 days consulting at £600 a day, plus £45 train fare\": finds the customer, drafts the lines with VAT, and creates and sends it after you approve.",
@@ -297,13 +308,27 @@ fn chase_overdue(p: &str, a: &Args) -> String {
     format!(
         "Help me chase overdue invoices in FreeAgent.\n\n\
 <tone>{}</tone>\n<customer>{}</customer>\n\n\
-1. `{p}list_invoices` with view overdue, 100 per page, following next_page. If a customer is given above, find them with `{p}search_contacts` and pass contact_id instead.\n\
-2. Group the invoices by contact. For each contact, `{p}get_contact` for their email, and `{p}list_notes` with contact_id to see earlier chases.\n\
-3. Show a table, the longest overdue and largest first: customer, invoice references, amounts due, days overdue, last chased.\n\
-4. Draft one email per customer covering all their overdue invoices with references, amounts and due dates. Tone: as given above; if none, friendly under 30 days overdue and firm after. Never threaten anything I have not asked for. Keep each under 150 words.\n\
+1. `{p}overdue_chase_plan`: overdue invoices grouped by customer, longest overdue first, with days overdue, when FreeAgent last emailed each, a stage and a drafted email. If a customer is given above, find them with `{p}search_contacts` and pass contact_id.\n\
+2. For each customer, `{p}get_contact` for their email, and `{p}list_notes` with contact_id to see earlier chases.\n\
+3. Show a table: customer, invoice references, amounts due, days overdue, last chased (from the notes or last_emailed).\n\
+4. Start from each customer's draft and adjust it to what you found. Tone: as given above; if none, the plan's stage (friendly up to 7 days overdue, firm up to 30, final after). Never threaten anything I have not asked for. Keep each under 150 words.\n\
 5. When I approve a draft, call `{p}send_document_email` with document invoice for the oldest invoice, my subject and body, and the customer's address; then `{p}create_note` on the contact recording the chase with the date. Report what was sent.\n\n{}",
         a.get("tone"),
         a.get("customer"),
+        footer(true)
+    )
+}
+
+fn mileage_check(p: &str, a: &Args) -> String {
+    format!(
+        "Check business mileage claimed in FreeAgent against HMRC's approved rates.\n\n\
+<tax_year>{}</tax_year>\n\n\
+1. `{p}mileage_tracker`, with tax_year if one is given above (else the current tax year).\n\
+2. For each person, one line per vehicle: miles, amount claimed, HMRC's approved amount and, for cars, miles left at 45p before the 10,000-mile threshold.\n\
+3. For each flag: if a claim was paid above the approved rate, give the expense, the amount over, and the fix: `{p}update_expense` to correct it, or treat the extra as taxable pay. If the threshold is close or passed, say from when claims are at 25p.\n\
+4. If anything looks missing, such as a person with company journeys but no claims, say so.\n\n\
+Change nothing until I agree to a specific correction. Suggest checking with my accountant if a claim was already paid.\n\n{}",
+        a.get("tax_year"),
         footer(true)
     )
 }
